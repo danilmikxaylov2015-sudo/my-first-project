@@ -1,0 +1,80 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>My First Project</title>
+  <style>
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      font-family: Arial, sans-serif;
+      background: linear-gradient(135deg, #0f172a, #1e293b);
+      color: white;
+      min-height: 100vh;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding: 20px;
+    }
+    .card {
+      width: 100%;
+      max-width: 420px;
+      background: rgba(255,255,255,0.08);
+      border: 1px solid rgba(255,255,255,0.15);
+      border-radius: 20px;
+      padding: 24px;
+      backdrop-filter: blur(10px);
+      box-shadow: 0 10px 30px rgba(0,0,0,0.25);
+      text-align: center;
+    }
+    h1 {
+      margin-top: 0;
+      font-size: 28px;
+    }
+    p {
+      color: #dbeafe;
+      line-height: 1.5;
+    }
+    button {
+      margin-top: 16px;
+      border: none;
+      border-radius: 12px;
+      padding: 14px 20px;
+      font-size: 16px;
+      cursor: pointer;
+      background: #38bdf8;
+      color: #082f49;
+      font-weight: bold;
+      transition: transform 0.15s ease, opacity 0.15s ease;
+    }
+    button:active {
+      transform: scale(0.97);
+    }
+    #status {
+      margin-top: 18px;
+      font-size: 16px;
+      color: #fef08a;
+      min-height: 24px;
+    }
+  </style>
+</head>
+<body>
+  <div class="card">
+    <h1>Привет!</h1>
+    <p>Это стартовая страница для репозитория <b>my-first-project</b>.</p>
+    <button id="helloBtn">Нажми меня</button>
+    <div id="status"></div>
+  </div>
+
+  <script>
+    const btn = document.getElementById('helloBtn');
+    const status = document.getElementById('status');
+
+    btn.addEventListener('click', () => {
+      const now = new Date();
+      status.textContent = 'Кнопка нажата: ' + now.toLocaleTimeString('ru-RU');
+    });
+  </script>
+</body>
+</html>

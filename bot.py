@@ -80,7 +80,7 @@ SMTP_PASSWORD = "juhjimjskqtzdkmh"
 SMTP_HOST = "smtp.gmail.com"
 SMTP_PORT = 465
 
-GROQ_MODEL = "llama-3.1-8b-instant"
+GROQ_MODEL = "openai/gpt-oss-120b"
 
 MAX_HISTORY_MESSAGES = 6
 MAX_TOKENS = 800

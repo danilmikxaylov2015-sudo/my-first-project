@@ -45,6 +45,9 @@ install_package_if_missing("requests", "requests")
 
 import logging
 import asyncio
+import random
+from io import BytesIO
+from urllib.parse import quote
 from collections import defaultdict
 
 import requests
@@ -66,10 +69,22 @@ TELEGRAM_BOT_TOKEN = "8778362559:AAGYlu7WG0u8J9Uw_-nQbpvhIpdZW56ZxGo"
 OPENROUTER_API_KEY = "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"
 TAVILY_API_KEY = "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"
 
+# Если у тебя есть доступ/баланс:
 OPENROUTER_MODEL = "openai/gpt-5-mini"
+
+# Если хочешь бесплатную модель, замени на:
+# OPENROUTER_MODEL = "openrouter/free"
 
 MAX_HISTORY_MESSAGES = 6
 MAX_TOKENS = 900
+
+# Генерация фото
+IMAGE_API_BASE = "https://gen.pollinations.ai/image/"
+IMAGE_MODEL = "flux"
+
+# Если Pollinations попросит ключ — вставишь сюда.
+# Если не просит — оставь пустым.
+POLLINATIONS_API_KEY = "sk_3kAOcZInuCCJeU304O1gfheQK6Nb33yu"
 
 # =============================================
 
@@ -83,10 +98,11 @@ history = defaultdict(list)
 
 
 SYSTEM_PROMPT = """
-Ты полезный ИИ.
+Ты полезный Telegram-бот с ИИ.
 Отвечай на русском языке.
 Пиши понятно, коротко и по делу.
 Если пользователь просит код — давай готовый рабочий код.
+Не говори, что ты OpenRouter, GPT или языковая модель.
 """
 
 
@@ -227,6 +243,44 @@ def ask_openrouter_sync(user_id: int, user_text: str, search_context: str = "") 
     return answer
 
 
+def generate_image_sync(prompt: str) -> bytes:
+    encoded_prompt = quote(prompt)
+    url = f"{IMAGE_API_BASE}{encoded_prompt}"
+
+    params = {
+        "model": IMAGE_MODEL,
+        "width": 1024,
+        "height": 1024,
+        "seed": random.randint(1, 999999999),
+        "nologo": "true",
+        "safe": "true",
+    }
+
+    if POLLINATIONS_API_KEY:
+        params["key"] = POLLINATIONS_API_KEY
+
+    response = requests.get(
+        url,
+        params=params,
+        timeout=240
+    )
+
+    if response.status_code != 200:
+        raise RuntimeError(
+            f"Image API error {response.status_code}: {response.text[:1000]}"
+        )
+
+    content_type = response.headers.get("Content-Type", "")
+
+    if "image" not in content_type:
+        raise RuntimeError(
+            f"API вернул не картинку. Content-Type: {content_type}. "
+            f"Ответ: {response.text[:1000]}"
+        )
+
+    return response.content
+
+
 async def send_long(update: Update, text: str):
     if len(text) <= 4096:
         await update.message.reply_text(text)
@@ -238,11 +292,11 @@ async def send_long(update: Update, text: str):
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
-        "Привет! Я ИИ-бот с поиском 🔎\n\n"
+        "Привет! Я ИИ-бот с поиском и генерацией фото 🤖\n\n"
         "Просто напиши вопрос — я отвечу.\n\n"
-        "Для поиска в интернете используй:\n"
-        "/search твой запрос\n\n"
         "Команды:\n"
+        "/search запрос — поиск в интернете\n"
+        "/imagine описание — сгенерировать фото\n"
         "/reset — очистить историю"
     )
 
@@ -297,6 +351,46 @@ async def search_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
 
 
+async def imagine_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    prompt = " ".join(context.args).strip()
+
+    if not prompt:
+        await update.message.reply_text(
+            "Напиши описание после команды.\n\n"
+            "Пример:\n"
+            "/imagine робот в неоновом городе, реализм"
+        )
+        return
+
+    await context.bot.send_chat_action(
+        chat_id=update.effective_chat.id,
+        action=ChatAction.UPLOAD_PHOTO
+    )
+
+    try:
+        await update.message.reply_text("Генерирую фото... 🎨")
+
+        image_bytes = await asyncio.to_thread(
+            generate_image_sync,
+            prompt
+        )
+
+        image = BytesIO(image_bytes)
+        image.name = "image.jpg"
+
+        await update.message.reply_photo(
+            photo=image,
+            caption="Готово ✅"
+        )
+
+    except Exception as e:
+        logging.exception(e)
+        await update.message.reply_text(
+            "Ошибка генерации фото:\n\n"
+            f"{str(e)[:1500]}"
+        )
+
+
 async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     text = update.message.text
@@ -341,10 +435,11 @@ def main():
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("reset", reset))
     app.add_handler(CommandHandler("search", search_command))
+    app.add_handler(CommandHandler("imagine", imagine_command))
 
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
 
-    print("OpenRouter Free + Tavily Search bot запущен")
+    print("AI bot + Search + Image запущен")
     app.run_polling(drop_pending_updates=True)
 
 

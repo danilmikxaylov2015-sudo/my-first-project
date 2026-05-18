@@ -66,13 +66,13 @@ def _env_int(name: str, default: int) -> int:
         return default
 
 
-VK_TOKEN = os.getenv("VK_TOKEN", "").strip()
+VK_TOKEN = os.getenv("VK_TOKEN", "vk1.a.jmhGtKNRy-okO7WM6HyGJofKiJMaUnBDyB3kEqxdKypWpcnJaEB7KBJixSmIMLc7YLBJHu6wKY2sElm6VlK59GWdnir2DJQl5D9ohPLQ_8USyg-_gpviWLw31YaUIcx51Y84dSXBPjUpwIULup3JGkiHECtNOGSqlxX4q3IvWgeGEwzaXefqwmTa9aFx2-g9b5dmx07Wx-HH3-Tu_2HDag").strip()
 OWNER_ID = _env_int("OWNER_ID", 848213593)
 VK_API_URL = os.getenv("VK_API_URL", "https://api.vk.com/method/").strip() or "https://api.vk.com/method/"
 VK_API_FALLBACK_URL = os.getenv("VK_API_FALLBACK_URL", "https://api.vk.ru/method/").strip() or "https://api.vk.ru/method/"
 VK_API_VERSION = os.getenv("VK_API_VERSION", "5.199").strip() or "5.199"
-OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY", "").strip()
-OPENROUTER_MODEL = os.getenv("OPENROUTER_MODEL", "~openai/gpt-latest").strip() or "~openai/gpt-latest"
+OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY", "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").strip()
+OPENROUTER_MODEL = os.getenv("OPENROUTER_MODEL", "~openai/gpt-5-mini").strip() or "~openai/gpt-5-mini"
 OPENROUTER_API_URL = os.getenv("OPENROUTER_API_URL", "https://openrouter.ai/api/v1/chat/completions").strip()
 OPENROUTER_REFERER = os.getenv("OPENROUTER_REFERER", "https://vk.com/").strip()
 OPENROUTER_APP_TITLE = os.getenv("OPENROUTER_APP_TITLE", "VK Chat Manager Bot").strip()

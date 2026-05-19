@@ -54,10 +54,7 @@ from datetime import date, datetime, timedelta
 
 import requests
 
-from telegram import (
-    Update,
-    LabeledPrice,
-)
+from telegram import Update, LabeledPrice
 from telegram.constants import ChatAction
 from telegram.ext import (
     Application,
@@ -72,7 +69,6 @@ from telegram.ext import (
 # ================= НАСТРОЙКИ =================
 
 TELEGRAM_BOT_TOKEN = "8778362559:AAGYlu7WG0u8J9Uw_-nQbpvhIpdZW56ZxGo"
-
 OPENROUTER_API_KEY = "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"
 TAVILY_API_KEY = "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"
 
@@ -84,20 +80,15 @@ VIP_DAYS = 30
 VIP_PRICE_STARS = 90
 VIP_PAYLOAD = "vip_30_days_90_stars"
 
-# Если хочешь бесплатную модель:
 OPENROUTER_MODEL = "openai/gpt-5-mini"
-
-# Если у тебя есть доступ к gpt-5-mini, можешь поставить:
+# Если хочешь GPT-5 mini и есть доступ/баланс:
 # OPENROUTER_MODEL = "openai/gpt-5-mini"
 
 MAX_HISTORY_MESSAGES = 6
 MAX_TOKENS = 900
 
-# Генерация фото
 IMAGE_API_BASE = "https://gen.pollinations.ai/image/"
 IMAGE_MODEL = "flux"
-
-# Если есть Pollinations key — вставь, если нет — оставь пустым
 POLLINATIONS_API_KEY = "sk_3kAOcZInuCCJeU304O1gfheQK6Nb33yu"
 
 DB_NAME = "ai_bot_stars.db"
@@ -189,6 +180,38 @@ def save_user_info(user):
     conn.close()
 
 
+def find_user_by_username(username: str):
+    username = username.replace("@", "").lower().strip()
+
+    conn = sqlite3.connect(DB_NAME)
+    cur = conn.cursor()
+
+    cur.execute(
+        "SELECT user_id, username, full_name FROM users WHERE LOWER(username) = ? LIMIT 1",
+        (username,)
+    )
+
+    row = cur.fetchone()
+    conn.close()
+
+    return row
+
+
+def find_user_by_id(user_id: int):
+    conn = sqlite3.connect(DB_NAME)
+    cur = conn.cursor()
+
+    cur.execute(
+        "SELECT user_id, username, full_name FROM users WHERE user_id = ? LIMIT 1",
+        (user_id,)
+    )
+
+    row = cur.fetchone()
+    conn.close()
+
+    return row
+
+
 def save_stars_payment(user, stars, charge_id):
     conn = sqlite3.connect(DB_NAME)
     cur = conn.cursor()
@@ -228,10 +251,7 @@ def get_usage_count(user_id: int) -> int:
     row = cur.fetchone()
     conn.close()
 
-    if row:
-        return row[0]
-
-    return 0
+    return row[0] if row else 0
 
 
 def add_usage(user_id: int):
@@ -288,7 +308,6 @@ def is_vip(user_id: int) -> bool:
 
 def grant_vip(user_id: int):
     old_until = get_vip_until(user_id)
-
     today = date.today()
 
     if old_until:
@@ -368,7 +387,10 @@ def count_users():
     cur.execute("SELECT COUNT(*) FROM users")
     users_count = cur.fetchone()[0]
 
-    cur.execute("SELECT COUNT(*) FROM users WHERE vip_until IS NOT NULL")
+    cur.execute("""
+        SELECT COUNT(*) FROM users
+        WHERE vip_until IS NOT NULL
+    """)
     vip_count = cur.fetchone()[0]
 
     cur.execute("SELECT COALESCE(SUM(stars), 0) FROM stars_payments")
@@ -623,7 +645,10 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "/myvip — проверить VIP\n"
         "/limit — узнать лимит\n"
         "/reset — очистить историю\n\n"
-        "Можно просто написать вопрос обычным сообщением."
+        "Команды владельца:\n"
+        "/givevip @username — выдать VIP\n"
+        "/givevip user_id — выдать VIP по ID\n"
+        "/stats — статистика"
     )
 
 
@@ -721,6 +746,100 @@ async def myvip_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"Обычный лимит: {DAILY_LIMIT} запросов в день\n"
             f"VIP: {VIP_DAILY_LIMIT} запросов в день\n\n"
             "Купить VIP: /vip"
+        )
+
+
+async def givevip_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    admin = update.effective_user
+
+    if admin.id != OWNER_ID:
+        await update.message.reply_text("❌ У тебя нет доступа к этой команде.")
+        return
+
+    save_user_info(admin)
+
+    target_id = None
+    target_text = None
+
+    if update.message.reply_to_message:
+        target = update.message.reply_to_message.from_user
+        target_id = target.id
+        target_text = f"@{target.username}" if target.username else target.full_name
+
+    elif context.args:
+        arg = context.args[0].strip()
+
+        if arg.startswith("@"):
+            found = find_user_by_username(arg)
+
+            if not found:
+                await update.message.reply_text(
+                    "❌ Пользователь не найден.\n\n"
+                    "Он должен сначала нажать /start у бота.\n\n"
+                    "Или выдай VIP по ID:\n"
+                    "/givevip 123456789"
+                )
+                return
+
+            target_id = found[0]
+            username = found[1]
+            full_name = found[2]
+            target_text = f"@{username}" if username else (full_name or str(target_id))
+
+        else:
+            try:
+                target_id = int(arg)
+            except ValueError:
+                await update.message.reply_text(
+                    "❌ Неправильный формат.\n\n"
+                    "Используй:\n"
+                    "/givevip @username\n"
+                    "/givevip 123456789"
+                )
+                return
+
+            found = find_user_by_id(target_id)
+
+            if found:
+                username = found[1]
+                full_name = found[2]
+                target_text = f"@{username}" if username else (full_name or str(target_id))
+            else:
+                target_text = str(target_id)
+
+    else:
+        await update.message.reply_text(
+            "Укажи пользователя.\n\n"
+            "Примеры:\n"
+            "/givevip @username\n"
+            "/givevip 123456789\n\n"
+            "Можно ещё ответить командой /givevip на сообщение пользователя."
+        )
+        return
+
+    vip_until = grant_vip(target_id)
+
+    await update.message.reply_text(
+        "✅ VIP выдан!\n\n"
+        f"Пользователь: {target_text}\n"
+        f"ID: {target_id}\n"
+        f"VIP до: {vip_until}\n"
+        f"Лимит: {VIP_DAILY_LIMIT} запросов в день"
+    )
+
+    try:
+        await context.bot.send_message(
+            chat_id=target_id,
+            text=(
+                "🎉 Тебе выдали VIP!\n\n"
+                f"VIP действует до: {vip_until}\n"
+                f"Лимит теперь: {VIP_DAILY_LIMIT} запросов в день."
+            )
+        )
+    except Exception:
+        await update.message.reply_text(
+            "VIP выдан, но бот не смог написать пользователю.\n"
+            "Скорее всего он ещё не нажимал /start у бота."
         )
 
 
@@ -967,16 +1086,16 @@ def main():
     app.add_handler(CommandHandler("limit", limit_command))
     app.add_handler(CommandHandler("vip", vip_command))
     app.add_handler(CommandHandler("myvip", myvip_command))
+    app.add_handler(CommandHandler("givevip", givevip_command))
     app.add_handler(CommandHandler("search", search_command))
     app.add_handler(CommandHandler("imagine", imagine_command))
     app.add_handler(CommandHandler("stats", stats_command))
 
     app.add_handler(PreCheckoutQueryHandler(pre_checkout_handler))
     app.add_handler(MessageHandler(filters.SUCCESSFUL_PAYMENT, successful_payment_handler))
-
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
 
-    print("AI bot + VIP Stars запущен")
+    print("AI bot + VIP Stars + givevip запущен")
     app.run_polling(drop_pending_updates=True)
 
 

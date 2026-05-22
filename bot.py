@@ -4,6 +4,7 @@ import time
 import random
 import threading
 
+# Автоустановка vk_api
 try:
     import vk_api
     from vk_api.bot_longpoll import VkBotLongPoll, VkBotEventType
@@ -15,10 +16,17 @@ except ImportError:
     from vk_api.bot_longpoll import VkBotLongPoll, VkBotEventType
 
 
+# Вставь только токен сообщества
 TOKEN = "vk1.a.jmhGtKNRy-okO7WM6HyGJofKiJMaUnBDyB3kEqxdKypWpcnJaEB7KBJixSmIMLc7YLBJHu6wKY2sElm6VlK59GWdnir2DJQl5D9ohPLQ_8USyg-_gpviWLw31YaUIcx51Y84dSXBPjUpwIULup3JGkiHECtNOGSqlxX4q3IvWgeGEwzaXefqwmTa9aFx2-g9b5dmx07Wx-HH3-Tu_2HDag"
 
-PR_TEXT = "пишите в лс пж. [https://vk.com/danil_mikxaylov|Данил Михайлов]"
-DELAY = 3
+# Твой VK ID
+OWNER_ID = 848213593
+
+# Текст пиара
+PR_TEXT = "пишите в лс пж. [danil_mikxaylov|Данил Михайлов]"
+
+# Интервал — 60 секунд
+DELAY = 1
 
 vk_session = vk_api.VkApi(token=TOKEN)
 vk = vk_session.get_api()
@@ -29,10 +37,23 @@ active_chats = {}
 def get_group_id():
     try:
         info = vk.groups.getById()
-        return info[0]["id"]
+        group_id = info[0]["id"]
+        print("ID сообщества найден:", group_id)
+        return group_id
     except Exception as e:
-        print("Ошибка получения ID сообщества:", e)
-        sys.exit()
+        print("Не получилось через groups.getById:", e)
+
+    try:
+        info = vk.groups.getTokenPermissions()
+        group_id = info.get("group_id")
+        if group_id:
+            print("ID сообщества найден:", group_id)
+            return group_id
+    except Exception as e:
+        print("Не получилось через groups.getTokenPermissions:", e)
+
+    print("Не удалось узнать ID сообщества. Проверь токен сообщества.")
+    sys.exit()
 
 
 GROUP_ID = get_group_id()
@@ -59,7 +80,7 @@ def pr_loop(peer_id):
 
 
 print("VK пиар-бот запущен.")
-print("Команды: /start и /stop")
+print("Команды владельца: /start и /stop")
 
 
 for event in longpoll.listen():
@@ -68,6 +89,12 @@ for event in longpoll.listen():
 
         text = msg.get("text", "").lower().strip()
         peer_id = msg.get("peer_id")
+        from_id = msg.get("from_id")
+
+        # Если команду пишет не владелец
+        if text in ["/start", "/stop"] and from_id != OWNER_ID:
+            send_message(peer_id, "У тебя нет доступа к этой команде.")
+            continue
 
         if text == "/start":
             if active_chats.get(peer_id):

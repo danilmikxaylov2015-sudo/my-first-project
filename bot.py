@@ -19,14 +19,13 @@ import random
 import time
 import requests
 
-# ТВОИ НАСТРОЙКИ
 USER_TOKEN = "vk1.a.edynZWBJGgef-lj0kOg-OdqtEzdzTm6YwntGyuzMSe8lf53NmWCYCsEW1XCyVTDZnjLnzeamx52N1grIhvo3Ovm7ykq081C7224Qo_uP8ls_tFptamaBjr-1tX6quT3IXUXDkQ9_UL0E1Ye39vGwNwsor7IOzJtx25w82uJXLcLgLmwQuTUtc3nyEclBzFluegboRUL8jb7U4LqFlxo-Pw"
 MY_USER_ID = 848213593
 
-# Списки целей в памяти
 target_reactions = {}  
 target_negatives = []  
 target_clones = []     
+blacklist = []         # Список пользователей в ЧС бота
 
 NEG_LINES = [
     "да пошел ты",
@@ -42,7 +41,6 @@ NEG_LINES = [
 ]
 
 def get_target_id(text, msg_info, vk):
-    """Вспомогательная функция для определения ID цели по реплаю или тегу"""
     reply_msg = msg_info.get('reply_message')
     if reply_msg:
         return reply_msg['from_id']
@@ -79,7 +77,10 @@ def main():
             except:
                 from_id, cmid, attachments = None, None, []
 
-            # Если пишет кто-то другой (авто-троллинг)
+            # Если пользователь в ЧС — бот его ПОЛНОСТЬЮ игнорирует
+            if from_id in blacklist and from_id != MY_USER_ID:
+                continue
+
             if from_id and from_id != MY_USER_ID:
                 if from_id in target_clones and not text.startswith("/"):
                     try:
@@ -99,10 +100,9 @@ def main():
                         if cmid: vk.messages.sendReaction(peer_id=peer_id, cmid=cmid, reaction_id=target_reactions[from_id])
                     except: pass
 
-            # Если команду вводишь ты (Владелец)
+            # Команды (работают только от твоего имени)
             if text.startswith("/") and (from_id == MY_USER_ID or peer_id == MY_USER_ID):
                 
-                # --- УМНОЕ УДАЛЕНИЕ СООБЩЕНИЙ ---
                 if text.strip() in ["/удалить", "/дел"]:
                     try:
                         reply_msg = msg_info.get('reply_message')
@@ -115,14 +115,43 @@ def main():
                         print(f"Ошибка удаления: {e}")
                     continue
 
-                # Сразу удаляем саму команду для скрытности в беседе
                 try: vk.messages.delete(message_ids=message_id, delete_for_all=1)
                 except: pass
 
-                # --- КОМАНДА: ИСКЛЮЧИТЬ ИЗ БЕСЕДЫ (/кик) ---
-                if text.startswith("/кик"):
+                # НОВАЯ КОМАНДА: ДОБАВИТЬ В ЧС
+                if text.startswith("/чс"):
                     try:
-                        # Проверяем, что это беседа, а не ЛС (у бесед peer_id начинается от 2000000000)
+                        t_id = get_target_id(text, msg_info, vk)
+                        if t_id:
+                            if t_id == MY_USER_ID:
+                                vk.messages.send(peer_id=peer_id, message="⚠️ Нельзя добавить в ЧС самого себя!", random_id=random.randint(1, 1000000))
+                            elif t_id not in blacklist:
+                                blacklist.append(t_id)
+                                vk.messages.send(peer_id=peer_id, message=f"⛔ Пользователь id{t_id} добавлен в ЧС бота и теперь полностью игнорируется.", random_id=random.randint(1, 1000000))
+                            else:
+                                vk.messages.send(peer_id=peer_id, message="⚠️ Этот пользователь уже в ЧС.", random_id=random.randint(1, 1000000))
+                        else:
+                            vk.messages.send(peer_id=peer_id, message="⚠️ Ответь на сообщение цели или тегни через @!", random_id=random.randint(1, 1000000))
+                    except: pass
+                    continue
+
+                # НОВАЯ КОМАНДА: УДАЛИТЬ ИЗ ЧС
+                elif text.startswith("/учс"):
+                    try:
+                        t_id = get_target_id(text, msg_info, vk)
+                        if t_id:
+                            if t_id in blacklist:
+                                blacklist.remove(t_id)
+                                vk.messages.send(peer_id=peer_id, message=f"✅ Пользователь id{t_id} удален из ЧС бота.", random_id=random.randint(1, 1000000))
+                            else:
+                                vk.messages.send(peer_id=peer_id, message="⚠️ Данного пользователя нет в ЧС.", random_id=random.randint(1, 1000000))
+                        else:
+                            vk.messages.send(peer_id=peer_id, message="⚠️ Ответь на сообщение цели или тегни через @!", random_id=random.randint(1, 1000000))
+                    except: pass
+                    continue
+
+                elif text.startswith("/кик"):
+                    try:
                         if peer_id > 2000000000:
                             chat_id = peer_id - 2000000000
                             t_id = get_target_id(text, msg_info, vk)
@@ -140,7 +169,6 @@ def main():
                         vk.messages.send(peer_id=peer_id, message=f"❌ Ошибка исключения: {e}", random_id=random.randint(1, 1000000))
                     continue
 
-                # --- КОМАНДА: СМЕНА АВАТАРКИ ПРОФИЛЯ ---
                 elif text.startswith("/ава"):
                     try:
                         photo_url = None
@@ -189,7 +217,6 @@ def main():
                         vk.messages.send(peer_id=peer_id, message=f"❌ Ошибка смены аватарки: {e}", random_id=random.randint(1, 1000000))
                     continue
 
-                # --- КОМАНДА: ОПУБЛИКОВАТЬ ПОСТ НА СТЕНУ ---
                 elif text.startswith("/опубликовать"):
                     try:
                         post_text = text[13:].strip()
@@ -211,7 +238,6 @@ def main():
                         vk.messages.send(peer_id=peer_id, message=f"❌ Ошибка публикации поста: {e}", random_id=random.randint(1, 1000000))
                     continue
 
-                # --- КОМАНДА: СПИСОК ГРУПП ПОЛЬЗОВАТЕЛЯ ---
                 elif text.startswith("/группы"):
                     try:
                         t_id = get_target_id(text, msg_info, vk)
@@ -228,7 +254,6 @@ def main():
                         vk.messages.send(peer_id=peer_id, message=f"❌ Ошибка получения групп: {e}", random_id=random.randint(1, 1000000))
                     continue
 
-                # --- КОМАНДА /ОТПРАВИТЬ (В ТОТ ЖЕ ЧАТ) ---
                 elif text.strip() == "/отправить":
                     try:
                         vk.messages.send(
@@ -239,7 +264,6 @@ def main():
                     except: pass
                     continue
 
-                # --- КОМАНДА /ОТПРЧЕЛУ (В ЛС ЖЕРТВЕ) ---
                 elif text.startswith("/отпрчелу"):
                     try:
                         target_id = get_target_id(text, msg_info, vk)
@@ -258,7 +282,6 @@ def main():
                     except: pass
                     continue
 
-                # --- КОМАНДЫ ТРОЛЛИНГА ---
                 elif text.startswith("/негатив"):
                     try:
                         reply_msg = msg_info.get('reply_message')
@@ -299,7 +322,6 @@ def main():
                                 vk.messages.send(peer_id=peer_id, message="пользователь удален из клонов", random_id=random.randint(1, 1000000))
                     except: pass
 
-                # --- ИСПРАВЛЕННЫЙ СПАМ НА СТРОГИЕ 0.7 СЕКУНД ---
                 elif text.startswith("/спам"):
                     try:
                         parts = text.split(" ")

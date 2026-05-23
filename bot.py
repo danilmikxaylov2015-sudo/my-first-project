@@ -33,10 +33,10 @@ account_reactions = {}
 account_negatives = {}  
 account_clones = {}     
 account_ignores = {}    
-original_profiles = {}  
 user_nicknames = {}    
 connected_users = {}
 active_threads = {}
+message_cache = {}  # Кэш для модуля Анти-слив
 
 NEG_LINES = [
     "да пошел ты",
@@ -109,6 +109,7 @@ def user_longpoll_loop(user_id, token):
                 if not is_active:
                     break
                     
+                # 1. ОБРАБОТКА НОВЫХ СООБЩЕНИЙ
                 if event.type == VkEventType.MESSAGE_NEW:
                     peer_id = event.peer_id
                     text = event.text
@@ -135,8 +136,22 @@ def user_longpoll_loop(user_id, token):
                                 attachments = msg_info.get('attachments', [])
                         except:
                             from_id = event.user_id if not event.from_me else user_id
+                    else:
+                        from_id = user_id
 
-                    # 1. АВТО-ФУНКЦИИ
+                    # Кэшируем сообщение для Анти-слива (Шпиона)
+                    if text:
+                        message_cache[message_id] = {
+                            'text': text,
+                            'user_id': from_id if from_id else event.user_id,
+                            'peer_id': peer_id,
+                            'from_me': event.from_me
+                        }
+                        # Защита от переполнения памяти
+                        if len(message_cache) > 5000:
+                            message_cache.pop(next(iter(message_cache)))
+
+                    # --- АВТО-ФУНКЦИИ ---
                     if not event.from_me and from_id:
                         if from_id in account_ignores.get(user_id, []):
                             try: vk.messages.markAsRead(peer_id=peer_id)
@@ -156,15 +171,14 @@ def user_longpoll_loop(user_id, token):
 
                         if from_id in account_reactions.get(user_id, {}) and cmid:
                             try: 
-                                # Исправлено: cmid заменен на официальный conversation_message_id
                                 vk.messages.sendReaction(peer_id=peer_id, conversation_message_id=cmid, reaction_id=account_reactions[user_id][from_id])
                             except Exception as e: 
                                 print(f"Ошибка авто-реакции: {e}")
 
-                    # 2. ОБРАБОТКА КОМАНД СЕЛФ-БОТА
+                    # --- ОБРАБОТКА КОМАНД СЕЛФ-БОТА ---
                     if event.from_me and text.startswith("/"):
                         
-                        # --- КОМАНДЫ ДЛЯ OWNER ---
+                        # Команды для OWNER
                         if text.startswith(("/подключить", "/роль", "/снять")):
                             if role != "owner":
                                 try: vk.messages.edit(peer_id=peer_id, message_id=message_id, message="⚠️ Ошибка: Данная команда доступна только Владельцу бота!")
@@ -235,14 +249,14 @@ def user_longpoll_loop(user_id, token):
                                     vk.messages.edit(peer_id=peer_id, message_id=message_id, message="⚠️ Пользователь не найден в списке привязанных.")
                                 continue
 
-                        # --- ОГРАНИЧЕНИЕ АДМИН-КОМАНД ---
-                        if text.startswith(("/кик", "/спам", "/негатив", "/унегатив", "/клон", "/уклон", "/реакция", "/стопреакция", "/ава", "/опубликовать", "/группы", "/игнор", "/уигнор", "/пригласить", "/мимикрия", "/возврат")):
+                        # Ограничение админ-команд
+                        if text.startswith(("/кик", "/спам", "/негатив", "/унегатив", "/клон", "/уклон", "/реакция", "/стопреакция", "/опубликовать", "/группы", "/игнор", "/уигнор", "/пригласить")):
                             if role not in ["owner", "admin"]:
                                 try: vk.messages.edit(peer_id=peer_id, message_id=message_id, message="⚠️ Недостаточно прав! Нужен статус Администратора.")
                                 except: pass
                                 continue
 
-                        # --- ОБРАБОТКА АДМИН-КОМАНД ---
+                        # Обработка админ-команд
                         if text.startswith("/группы"):
                             try:
                                 vk.messages.edit(peer_id=peer_id, message_id=message_id, message="🔍 Ищу открытые группы пользователя...")
@@ -288,86 +302,6 @@ def user_longpoll_loop(user_id, token):
                                 except: pass
                             continue
 
-                        elif text.startswith("/мимикрия"):
-                            t_id = get_target_id(text, msg_info, vk)
-                            if not t_id:
-                                try: vk.messages.edit(peer_id=peer_id, message_id=message_id, message="⚠️ Ответь на сообщение цели или тегни её, чтобы скопировать профиль.")
-                                except: pass
-                                continue
-                            try:
-                                vk.messages.edit(peer_id=peer_id, message_id=message_id, message="🎭 Сохраняю твой профиль и копирую жертву...")
-                                
-                                if user_id not in original_profiles:
-                                    me = vk.users.get(user_ids=[user_id], fields="photo_max_orig")[0]
-                                    original_profiles[user_id] = {
-                                        "first_name": me['first_name'],
-                                        "last_name": me['last_name'],
-                                        "photo": me.get('photo_max_orig')
-                                    }
-                                
-                                target = vk.users.get(user_ids=[t_id], fields="photo_max_orig")[0]
-                                t_first = target['first_name']
-                                t_last = target['last_name']
-                                t_photo = target.get('photo_max_orig')
-                                
-                                vk.account.saveProfileInfo(first_name=t_first, last_name=t_last)
-                                
-                                if t_photo:
-                                    ext = "jpg"
-                                    for possible_ext in ["png", "webp", "gif", "jpeg"]:
-                                        if f".{possible_ext}" in t_photo.lower():
-                                            ext = possible_ext
-                                            break
-                                            
-                                    up_srv = vk.photos.getOwnerPhotoUploadServer()
-                                    p_bytes = requests.get(t_photo, headers={"User-Agent": "Mozilla/5.0"}).content
-                                    
-                                    resp = requests.post(up_srv['upload_url'], files={
-                                        'photo': (f'avatar.{ext}', p_bytes),
-                                        'file': (f'avatar.{ext}', p_bytes)
-                                    }).json()
-                                    vk.photos.saveOwnerPhoto(server=resp['server'], hash=resp['hash'], photo=resp['photo'])
-                                
-                                vk.messages.edit(peer_id=peer_id, message_id=message_id, message=f"🔥 Полная мимикрия под [id{t_id}|{t_first} {t_last}] успешно завершена!")
-                            except Exception as e:
-                                try: vk.messages.edit(peer_id=peer_id, message_id=message_id, message=f"❌ Ошибка мимикрии: {e}")
-                                except: pass
-                            continue
-
-                        elif text.startswith("/возврат"):
-                            if user_id not in original_profiles:
-                                try: vk.messages.edit(peer_id=peer_id, message_id=message_id, message="⚠️ Ты еще не использовал мимикрию на этом аккаунте.")
-                                except: pass
-                                continue
-                            try:
-                                vk.messages.edit(peer_id=peer_id, message_id=message_id, message="⏳ Возвращаю твой родной профиль...")
-                                orig = original_profiles[user_id]
-                                
-                                vk.account.saveProfileInfo(first_name=orig['first_name'], last_name=orig['last_name'])
-                                
-                                if orig['photo']:
-                                    ext = "jpg"
-                                    for possible_ext in ["png", "webp", "gif", "jpeg"]:
-                                        if f".{possible_ext}" in orig['photo'].lower():
-                                            ext = possible_ext
-                                            break
-                                            
-                                    up_srv = vk.photos.getOwnerPhotoUploadServer()
-                                    p_bytes = requests.get(orig['photo'], headers={"User-Agent": "Mozilla/5.0"}).content
-                                    
-                                    resp = requests.post(up_srv['upload_url'], files={
-                                        'photo': (f'avatar.{ext}', p_bytes),
-                                        'file': (f'avatar.{ext}', p_bytes)
-                                    }).json()
-                                    vk.photos.saveOwnerPhoto(server=resp['server'], hash=resp['hash'], photo=resp['photo'])
-                                
-                                del original_profiles[user_id]
-                                vk.messages.edit(peer_id=peer_id, message_id=message_id, message="✅ Твой профиль полностью восстановлен!")
-                            except Exception as e:
-                                try: vk.messages.edit(peer_id=peer_id, message_id=message_id, message=f"❌ Ошибка восстановления: {e}")
-                                except: pass
-                            continue
-
                         elif text.startswith("/пригласить"):
                             if peer_id <= 2000000000:
                                 try: vk.messages.edit(peer_id=peer_id, message_id=message_id, message="⚠️ Эта команда работает только внутри бесед/чатов!")
@@ -402,7 +336,7 @@ def user_longpoll_loop(user_id, token):
                                 except: pass
                             continue
 
-                        # --- ОБЩИЕ КОМАНДЫ ДЛЯ ВСЕХ ---
+                        # Общие команды для всех
                         elif text.startswith("/инфо"):
                             try:
                                 vk.messages.edit(peer_id=peer_id, message_id=message_id, message="🔍 Ищу информацию пользователя...")
@@ -490,38 +424,6 @@ def user_longpoll_loop(user_id, token):
                             except: pass
                             continue
 
-                        elif text.startswith("/ава"):
-                            try:
-                                photo_url = None
-                                link_match = re.search(r'(https?://[^\s]+)', text)
-                                if link_match: photo_url = link_match.group(1)
-                                if not photo_url:
-                                    curr_att = attachments or (msg_info.get('reply_message', {}).get('attachments', []) if msg_info.get('reply_message') else [])
-                                    for att in curr_att:
-                                        if att['type'] == 'photo':
-                                            photo_url = sorted(att['photo']['sizes'], key=lambda x: x['width']*x['height'])[-1]['url']
-                                            break
-                                if photo_url:
-                                    ext = "jpg"
-                                    for possible_ext in ["png", "webp", "gif", "jpeg"]:
-                                        if f".{possible_ext}" in photo_url.lower():
-                                            ext = possible_ext
-                                            break
-                                            
-                                    up_srv = vk.photos.getOwnerPhotoUploadServer()
-                                    p_bytes = requests.get(photo_url, headers={"User-Agent": "Mozilla/5.0"}).content
-                                    
-                                    resp = requests.post(up_srv['upload_url'], files={
-                                        'photo': (f'avatar.{ext}', p_bytes),
-                                        'file': (f'avatar.{ext}', p_bytes)
-                                    }).json()
-                                    vk.photos.saveOwnerPhoto(server=resp['server'], hash=resp['hash'], photo=resp['photo'])
-                                    vk.messages.edit(peer_id=peer_id, message_id=message_id, message="🔥 Аватарка профиля успешно изменена!")
-                            except Exception as e:
-                                try: vk.messages.edit(peer_id=peer_id, message_id=message_id, message=f"❌ Ошибка смены авы: {e}")
-                                except: pass
-                            continue
-
                         elif text.startswith("/опубликовать"):
                             try:
                                 p_text = text[13:].strip()
@@ -582,7 +484,6 @@ def user_longpoll_loop(user_id, token):
                                 except: pass
                             continue
 
-                        # --- ИСПРАВЛЕННАЯ КОМАНДА СПАМА ---
                         elif text.startswith("/спам"):
                             try:
                                 parts = text.strip().split(" ")
@@ -594,7 +495,7 @@ def user_longpoll_loop(user_id, token):
                                     
                                     vk.messages.edit(peer_id=peer_id, message_id=message_id, message=f"🚀 Запускаю спам ({count} шт)...")
                                     for _ in range(count):
-                                        time.sleep(0.4)  # Слегка увеличили задержку для защиты от капчи
+                                        time.sleep(0.4)
                                         vk.messages.send(peer_id=peer_id, message=s_text, random_id=random.randint(1,1000000))
                                 else:
                                     vk.messages.edit(peer_id=peer_id, message_id=message_id, message="⚠️ Пример: /спам привет всем 5")
@@ -602,7 +503,6 @@ def user_longpoll_loop(user_id, token):
                                 print(f"Ошибка в спаме: {e}")
                             continue
 
-                        # --- ИСПРАВЛЕННАЯ КОМАНДА РЕАКЦИИ ---
                         elif text.startswith("/реакция"):
                             t_id = get_target_id(text, msg_info, vk)
                             if t_id:
@@ -624,6 +524,30 @@ def user_longpoll_loop(user_id, token):
                                 try: vk.messages.edit(peer_id=peer_id, message_id=message_id, message="✅ Твоя авто-реакция отключена")
                                 except: pass
                             continue
+                
+                # 2. ОБРАБОТКА УДАЛЕНИЙ (Анти-слив / Шпион)
+                elif event.type == VkEventType.MESSAGE_FLAGS_SET:
+                    # 131072 — системная маска события "Сообщение удалено для всех"
+                    if event.mask & 131072:
+                        deleted_msg_id = event.message_id
+                        
+                        if deleted_msg_id in message_cache:
+                            msg_data = message_cache[deleted_msg_id]
+                            
+                            # Не позорим сами себя, если удалили свое сообщение
+                            if not msg_data['from_me'] and msg_data['text']:
+                                try:
+                                    u_info = vk.users.get(user_ids=msg_data['user_id'])[0]
+                                    author_name = f"{u_info['first_name']} {u_info['last_name']}"
+                                    del_text = msg_data['text']
+                                    
+                                    vk.messages.send(
+                                        peer_id=msg_data['peer_id'],
+                                        message=f"🚨 [АНТИ-СЛИВ] {author_name} испугался и удалил сообщение!\n\nОригинал: «{del_text}» 🤡",
+                                        random_id=random.randint(1, 1000000)
+                                    )
+                                except Exception as e:
+                                    print(f"Ошибка шпиона: {e}")
                             
         except Exception as loop_err:
             print(f"⚠️ Поток ID {user_id} временно упал: {loop_err}. Перезапуск через 5 секунд...")

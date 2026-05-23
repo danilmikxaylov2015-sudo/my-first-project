@@ -61,7 +61,7 @@ def main():
     vk = vk_session.get_api()
     longpoll = VkLongPoll(vk_session)
     
-    print("🚀 Бот со всеми русскими командами и постами запущен!")
+    print("🚀 Бот успешно запущен без ошибок!")
 
     for event in longpoll.listen():
         if event.type == VkEventType.MESSAGE_NEW:
@@ -108,7 +108,7 @@ def main():
                             try: vk.messages.delete(message_ids=message_id, delete_for_all=1)
                             except: pass
                             vk.messages.delete(message_ids=target_msg_id, delete_for_all=1)
-                    exceptException as e:
+                    except Exception as e:
                         print(f"Ошибка удаления: {e}")
                     continue
 
@@ -121,7 +121,6 @@ def main():
                     try:
                         post_text = text[13:].strip()
                         if post_text:
-                            # Создаем запись на своей стене (owner_id передавать не нужно, по умолчанию своя)
                             wall_post = vk.wall.post(message=post_text)
                             post_id = wall_post.get('post_id')
                             vk.messages.send(

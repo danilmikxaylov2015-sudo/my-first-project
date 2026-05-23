@@ -1,6 +1,7 @@
 import os
 import sys
 import subprocess
+import json
 
 def install_vk_api():
     try:
@@ -27,7 +28,8 @@ target_reactions = {}
 target_negatives = []  
 target_clones = []     
 target_madness = []    
-admins_list = []       # Список ID пользователей, у которых есть роль админа
+admins_list = []       # Список ID пользователей с ролью админа
+linked_users = set()   # Список ID пользователей, которые привязали бота
 
 NEG_LINES = [
     "да пошел ты",
@@ -59,13 +61,13 @@ def make_mad_text(text):
         result += char.upper() if i % 2 == 0 else char.lower()
     return f"«{result}» — {random.choice(MOCK_PUNCHES)}"
 
-# --- ПОТОК 1: СЛУШАЕМ ТВОЙ ЛИЧНЫЙ АККАУНТ (УПРАВЛЕНИЕ И ТРОЛЛИНГ) ---
+# --- ПОТОК 1: ТВОЙ СТРАНИЦА-АККАУНТ (УПРАВЛЕНИЕ, СПАМ И ХАРД-ТРОЛЛИНГ) ---
 def user_account_loop():
     vk_session = vk_api.VkApi(token=USER_TOKEN)
     vk = vk_session.get_api()
     longpoll = VkLongPoll(vk_session)
     
-    print("🤖 Поток аккаунта (Владелец) запущен успешно!")
+    print("🤖 Поток страницы (Владелец) запущен успешно!")
 
     for event in longpoll.listen():
         if event.type == VkEventType.MESSAGE_NEW:
@@ -80,7 +82,7 @@ def user_account_loop():
             except:
                 from_id, cmid = None, None
 
-            # Если пишет кто-то другой (жертвы)
+            # Если пишет жертва
             if from_id and from_id != MY_USER_ID:
                 if from_id in target_madness and not text.startswith("/"):
                     try:
@@ -111,112 +113,19 @@ def user_account_loop():
                         if cmid: vk.messages.sendReaction(peer_id=peer_id, cmid=cmid, reaction_id=target_reactions[from_id])
                     except: pass
 
-            # ЕСЛИ КОМАНДУ ПИШЕШЬ ТЫ (ВЛАДЕЛЕЦ) ИЛИ ТВОИ АДМИНЫ
-            is_sender_admin = from_id in admins_list
-            is_sender_owner = from_id == MY_USER_ID or peer_id == MY_USER_ID # если отправлено со страницы
+            # ПРОВЕРКА ПРАВ: КТО ПИШЕТ КОМАНДУ?
+            is_sender_owner = (from_id == MY_USER_ID or peer_id == MY_USER_ID)
+            is_sender_admin = (from_id in admins_list)
 
-            if text.startswith("/") and (is_sender_owner or is_sender_admin):
-                # Сразу удаляем саму команду со страницы для беспалевности
-                try: vk.messages.delete(message_ids=message_id, delete_for_all=1)
-                except: pass
-
-                # --- СИСТЕМА ДУБЛИРОВАНИЯ КОМАНД ДЛЯ АДМИНОВ И ВЛАДЕЛЬЦА ---
-                if text.startswith("/негатив"):
-                    try:
-                        reply_msg = msg_info.get('reply_message')
-                        if reply_msg:
-                            vic_id = reply_msg['from_id']
-                            if vic_id not in target_negatives:
-                                target_negatives.append(vic_id)
-                                vk.messages.send(peer_id=peer_id, message="пользователь добавлен в негатив", random_id=random.randint(1, 1000000))
+            if text.startswith("/"):
+                # Если команду ввел Владелец или Админ — удаляем её из чата для скрытности
+                if is_sender_owner or is_sender_admin:
+                    try: vk.messages.delete(message_ids=message_id, delete_for_all=1)
                     except: pass
 
-                elif text.startswith("/унегатив"):
-                    try:
-                        reply_msg = msg_info.get('reply_message')
-                        if reply_msg:
-                            vic_id = reply_msg['from_id']
-                            if vic_id in target_negatives:
-                                target_negatives.remove(vic_id)
-                                vk.messages.send(peer_id=peer_id, message="пользователь удален из негатива", random_id=random.randint(1, 1000000))
-                    except: pass
-
-                elif text.startswith("/безумие"):
-                    try:
-                        reply_msg = msg_info.get('reply_message')
-                        if reply_msg:
-                            vic_id = reply_msg['from_id']
-                            if vic_id not in target_madness:
-                                target_madness.append(vic_id)
-                                vk.messages.send(peer_id=peer_id, message="пользователь добавлен в безумие", random_id=random.randint(1, 1000000))
-                    except: pass
-
-                elif text.startswith("/убезумие"):
-                    try:
-                        reply_msg = msg_info.get('reply_message')
-                        if reply_msg:
-                            vic_id = reply_msg['from_id']
-                            if vic_id in target_madness:
-                                target_madness.remove(vic_id)
-                                vk.messages.send(peer_id=peer_id, message="пользователь удален из безумия", random_id=random.randint(1, 1000000))
-                    except: pass
-
-                elif text.startswith("/клон"):
-                    try:
-                        reply_msg = msg_info.get('reply_message')
-                        if reply_msg:
-                            vic_id = reply_msg['from_id']
-                            if vic_id not in target_clones:
-                                target_clones.append(vic_id)
-                                vk.messages.send(peer_id=peer_id, message="пользователь добавлен в клоны", random_id=random.randint(1, 1000000))
-                    except: pass
-
-                elif text.startswith("/уклон"):
-                    try:
-                        reply_msg = msg_info.get('reply_message')
-                        if reply_msg:
-                            vic_id = reply_msg['from_id']
-                            if vic_id in target_clones:
-                                target_clones.remove(vic_id)
-                                vk.messages.send(peer_id=peer_id, message="пользователь удален из клонов", random_id=random.randint(1, 1000000))
-                    except: pass
-
-                elif text.startswith("/спам"):
-                    try:
-                        parts = text.split(" ")
-                        if len(parts) < 3: continue
-                        count = int(parts[-1])
-                        spam_text = " ".join(parts[1:-1])
-                        for _ in range(count):
-                            try: vk.messages.setActivity(peer_id=peer_id, type="typing")
-                            except: pass
-                            time.sleep(0.1)
-                            vk.messages.send(peer_id=peer_id, message=spam_text, random_id=random.randint(1, 1000000))
-                            time.sleep(0.4)
-                    except: pass
-
-                elif text.startswith("/реакция"):
-                    try:
-                        reply_msg = msg_info.get('reply_message')
-                        if reply_msg:
-                            vic_id = reply_msg['from_id']
-                            parts = text.split(" ")
-                            try: r_id = int(parts[1])
-                            except: r_id = 1
-                            target_reactions[vic_id] = r_id
-                    except: pass
-
-                elif text.startswith("/стопреакция"):
-                    try:
-                        reply_msg = msg_info.get('reply_message')
-                        if reply_msg:
-                            vic_id = reply_msg['from_id']
-                            if vic_id in target_reactions: del target_reactions[vic_id]
-                    except: pass
-
-                # ТОЛЬКО ДЛЯ ТЕБЯ (ВЛАДЕЛЬЦА) УПРАВЛЕНИЕ РОЛЯМИ
-                if is_sender_owner:
-                    if text.startswith("/роль админ"):
+                # --- ЖЕСТКАЯ ПРОВЕРКА РОЛЕЙ СТРОГО ОТ ВЛАДЕЛЬЦА (ОБМАНУТЬ НЕЛЬЗЯ) ---
+                if text.startswith("/роль админ"):
+                    if is_sender_owner: # Только ты!
                         try:
                             reply_msg = msg_info.get('reply_message')
                             if reply_msg:
@@ -225,8 +134,10 @@ def user_account_loop():
                                     admins_list.append(admin_id)
                                     vk.messages.send(peer_id=peer_id, message="Администратор успешно назначен!", random_id=random.randint(1, 1000000))
                         except: pass
+                    continue
 
-                    elif text.startswith("/снять"):
+                elif text.startswith("/снять"):
+                    if is_sender_owner: # Только ты!
                         try:
                             reply_msg = msg_info.get('reply_message')
                             if reply_msg:
@@ -235,13 +146,108 @@ def user_account_loop():
                                     admins_list.remove(admin_id)
                                     vk.messages.send(peer_id=peer_id, message="Администратор успешно снят со своего поста!", random_id=random.randint(1, 1000000))
                         except: pass
+                    continue
 
-# --- ПОТОК 2: СЛУШАЕМ БОТА-СООБЩЕСТВО (ДЛЯ ВСЕХ ПОЛЬЗОВАТЕЛЕЙ) ---
+                # --- ОСТАЛЬНЫЕ КОМАНДЫ ДОСТУПНЫ ВЛАДЕЛЬЦУ И НАСТОЯЩИМ АДМИНАМ ---
+                if is_sender_owner or is_sender_admin:
+                    if text.startswith("/негатив"):
+                        try:
+                            reply_msg = msg_info.get('reply_message')
+                            if reply_msg:
+                                vic_id = reply_msg['from_id']
+                                if vic_id not in target_negatives:
+                                    target_negatives.append(vic_id)
+                                    vk.messages.send(peer_id=peer_id, message="пользователь добавлен в негатив", random_id=random.randint(1, 1000000))
+                        except: pass
+
+                    elif text.startswith("/унегатив"):
+                        try:
+                            reply_msg = msg_info.get('reply_message')
+                            if reply_msg:
+                                vic_id = reply_msg['from_id']
+                                if vic_id in target_negatives:
+                                    target_negatives.remove(vic_id)
+                                    vk.messages.send(peer_id=peer_id, message="пользователь удален из негатива", random_id=random.randint(1, 1000000))
+                        except: pass
+
+                    elif text.startswith("/безумие"):
+                        try:
+                            reply_msg = msg_info.get('reply_message')
+                            if reply_msg:
+                                vic_id = reply_msg['from_id']
+                                if vic_id not in target_madness:
+                                    target_madness.append(vic_id)
+                                    vk.messages.send(peer_id=peer_id, message="пользователь добавлен в безумие", random_id=random.randint(1, 1000000))
+                        except: pass
+
+                    elif text.startswith("/убезумие"):
+                        try:
+                            reply_msg = msg_info.get('reply_message')
+                            if reply_msg:
+                                vic_id = reply_msg['from_id']
+                                if vic_id in target_madness:
+                                    target_madness.remove(vic_id)
+                                    vk.messages.send(peer_id=peer_id, message="пользователь удален из безумия", random_id=random.randint(1, 1000000))
+                        except: pass
+
+                    elif text.startswith("/клон"):
+                        try:
+                            reply_msg = msg_info.get('reply_message')
+                            if reply_msg:
+                                vic_id = reply_msg['from_id']
+                                if vic_id not in target_clones:
+                                    target_clones.append(vic_id)
+                                    vk.messages.send(peer_id=peer_id, message="пользователь добавлен в клоны", random_id=random.randint(1, 1000000))
+                        except: pass
+
+                    elif text.startswith("/уклон"):
+                        try:
+                            reply_msg = msg_info.get('reply_message')
+                            if reply_msg:
+                                vic_id = reply_msg['from_id']
+                                if vic_id in target_clones:
+                                    target_clones.remove(vic_id)
+                                    vk.messages.send(peer_id=peer_id, message="пользователь удален из клонов", random_id=random.randint(1, 1000000))
+                        except: pass
+
+                    elif text.startswith("/спам"):
+                        try:
+                            parts = text.split(" ")
+                            if len(parts) < 3: continue
+                            count = int(parts[-1])
+                            spam_text = " ".join(parts[1:-1])
+                            for _ in range(count):
+                                try: vk.messages.setActivity(peer_id=peer_id, type="typing")
+                                except: pass
+                                time.sleep(0.1)
+                                vk.messages.send(peer_id=peer_id, message=spam_text, random_id=random.randint(1, 1000000))
+                                time.sleep(0.4)
+                        except: pass
+
+                    elif text.startswith("/реакция"):
+                        try:
+                            reply_msg = msg_info.get('reply_message')
+                            if reply_msg:
+                                vic_id = reply_msg['from_id']
+                                parts = text.split(" ")
+                                try: r_id = int(parts[1])
+                                except: r_id = 1
+                                target_reactions[vic_id] = r_id
+                        except: pass
+
+                    elif text.startswith("/стопреакция"):
+                        try:
+                            reply_msg = msg_info.get('reply_message')
+                            if reply_msg:
+                                vic_id = reply_msg['from_id']
+                                if vic_id in target_reactions: del target_reactions[vic_id]
+                        except: pass
+
+# --- ПОТОК 2: ТВОЙ БОТ-СООБЩЕСТВО (ПРИВЯЗКА И КНОПКИ ДЛЯ ОБЫЧНЫХ ЮЗЕРОВ) ---
 def group_bot_loop():
     vk_session = vk_api.VkApi(token=GROUP_TOKEN)
     vk = vk_session.get_api()
     
-    # Получаем longpoll группы динамически
     try:
         group_id = vk.groups.getById()[0]['id']
         from vk_api.bot_longpoll import VkBotLongPoll, VkBotEventType
@@ -257,27 +263,75 @@ def group_bot_loop():
             peer_id = message['peer_id']
             text = message['text']
             from_id = message['from_id']
+            payload = message.get('payload')
 
-            # Любой пользователь, у которого привязан этот бот-сообщество, может отправить рекламу в ЛС
-            if text.strip() == "/отправить":
+            # Генерируем красивую инлайн-кнопку для привязки
+            keyboard = {
+                "inline": True,
+                "buttons": [[
+                    {
+                        "action": {
+                            "type": "text",
+                            "payload": "{\"button\": \"link_account\"}",
+                            "label": "Привязать бота к акку 🔐"
+                        },
+                        "color": "positive"
+                    }
+                ]]
+            }
+
+            # 1. ОБРАБОТКА НАЖАТИЯ НА КНОПКУ ПРИВЯЗКИ
+            if payload and json.loads(payload).get('button') == 'link_account':
+                linked_users.add(from_id)
                 try:
                     vk.messages.send(
                         peer_id=peer_id,
-                        message="ХОТИТЕ ПОЛУЧИТЬ МЕНЯ ПИШИ В ЛС",
+                        message="✅ Бот успешно привязан к твоему аккаунту! Теперь тебе доступна команда /отправить",
+                        random_id=random.randint(1, 1000000)
+                    )
+                except: pass
+                continue
+
+            # 2. КОМАНДА /ОТПРАВИТЬ (Работает ТОЛЬКО если аккаунт привязан)
+            if text.strip() == "/отправить":
+                if from_id in linked_users or from_id == MY_USER_ID:
+                    try:
+                        vk.messages.send(
+                            peer_id=peer_id,
+                            message="ХОТИТЕ ПОЛУЧИТЬ МЕНЯ ПИШИ В ЛС",
+                            random_id=random.randint(1, 1000000)
+                        )
+                    except: pass
+                else:
+                    try:
+                        vk.messages.send(
+                            peer_id=peer_id,
+                            message="⚠️ Твой аккаунт не привязан! Нажми кнопку ниже, чтобы привязать бота.",
+                            keyboard=json.dumps(keyboard),
+                            random_id=random.randint(1, 1000000)
+                        )
+                    except: pass
+                continue
+
+            # 3. ЕСЛИ ЧЕЛОВЕК ПИШЕТ ЧТО-ТО ДРУГОЕ — ПРЕДЛАГАЕМ ПРИВЯЗКУ
+            if from_id != MY_USER_ID:
+                try:
+                    vk.messages.send(
+                        peer_id=peer_id,
+                        message="Привет! Чтобы привязать бота к своему профилю, просто нажми на зеленую кнопку ниже 👇",
+                        keyboard=json.dumps(keyboard),
                         random_id=random.randint(1, 1000000)
                     )
                 except: pass
 
 if __name__ == "__main__":
-    print("👑 Запуск Иерархического Бот-Комплекса...")
+    print("👑 Запуск усовершенствованного комплекса защиты и привязки...")
     
-    # Запускаем оба ядра параллельно в разных потоках
     t1 = threading.Thread(target=user_account_loop, daemon=True)
     t2 = threading.Thread(target=group_bot_loop, daemon=True)
     
     t1.start()
     t2.start()
     
-    # Не даем скрипту закрыться
     while True:
         time.sleep(1)

@@ -97,6 +97,7 @@ def main():
 
             if text.startswith("/") and (from_id == MY_USER_ID or peer_id == MY_USER_ID):
                 
+                # Исключение для удаления: тут сообщения физически стираются
                 if text.strip() in ["/удалить", "/дел"]:
                     try:
                         reply_msg = msg_info.get('reply_message')
@@ -109,12 +110,10 @@ def main():
                         print(f"Ошибка удаления: {e}")
                     continue
 
-                try: vk.messages.delete(message_ids=message_id, delete_for_all=1)
-                except: pass
-
-                # НОВАЯ КОМАНДА: ИНФО О ПОЛЬЗОВАТЕЛЕ
+                # РЕДАКТИРОВАНИЕ КОМАНДЫ /ИНФО
                 if text.startswith("/инфо"):
                     try:
+                        vk.messages.edit(peer_id=peer_id, message_id=message_id, message="⏳ Получаю информацию...")
                         t_id = get_target_id(text, msg_info, vk)
                         if t_id and t_id > 0:
                             user_data = vk.users.get(user_ids=t_id, fields="photo_max_orig,is_closed")[0]
@@ -131,26 +130,28 @@ def main():
                                 f"• Ссылка: vk.com/id{t_id}\n"
                                 f"• Аватарка: {photo}"
                             )
-                            vk.messages.send(peer_id=peer_id, message=info_msg, random_id=random.randint(1, 1000000))
+                            vk.messages.edit(peer_id=peer_id, message_id=message_id, message=info_msg)
                         else:
-                            vk.messages.send(peer_id=peer_id, message="⚠️ Ответь на сообщение цели или тегни через @!", random_id=random.randint(1, 1000000))
+                            vk.messages.edit(peer_id=peer_id, message_id=message_id, message="⚠️ Ответь на сообщение цели или тегни через @!")
                     except Exception as e:
-                        vk.messages.send(peer_id=peer_id, message=f"❌ Ошибка получения инфо: {e}", random_id=random.randint(1, 1000000))
+                        try: vk.messages.edit(peer_id=peer_id, message_id=message_id, message=f"❌ Ошибка получения инфо: {e}")
+                        except: pass
                     continue
 
-                # НОВАЯ КОМАНДА: ВЫХОД ИЗ БЕСЕДЫ
+                # РЕДАКТИРОВАНИЕ КОМАНДЫ /ВЫХОД
                 elif text.strip() == "/выход":
                     try:
                         if peer_id > 2000000000:
                             chat_id = peer_id - 2000000000
-                            vk.messages.send(peer_id=peer_id, message="👋 Всем пока, я погнал!", random_id=random.randint(1, 1000000))
-                            time.sleep(0.5)
+                            vk.messages.edit(peer_id=peer_id, message_id=message_id, message="👋 Всем пока, я погнал!")
+                            time.sleep(1)
                             vk.messages.removeChatUser(chat_id=chat_id, user_id=MY_USER_ID)
                         else:
-                            vk.messages.send(peer_id=peer_id, message="⚠️ Эта команда работает только в беседах!", random_id=random.randint(1, 1000000))
+                            vk.messages.edit(peer_id=peer_id, message_id=message_id, message="⚠️ Эта команда работает только в беседах!")
                     except: pass
                     continue
 
+                # РЕДАКТИРОВАНИЕ КОМАНДЫ /КИК
                 elif text.startswith("/кик"):
                     try:
                         if peer_id > 2000000000:
@@ -159,19 +160,23 @@ def main():
                             
                             if t_id:
                                 if t_id == MY_USER_ID:
-                                    vk.messages.send(peer_id=peer_id, message="⚠️ Нельзя кикнуть самого себя!", random_id=random.randint(1, 1000000))
+                                    vk.messages.edit(peer_id=peer_id, message_id=message_id, message="⚠️ Нельзя кикнуть самого себя!")
                                 else:
                                     vk.messages.removeChatUser(chat_id=chat_id, user_id=t_id)
+                                    vk.messages.edit(peer_id=peer_id, message_id=message_id, message=f"✅ Пользователь id{t_id} успешно исключен!")
                             else:
-                                vk.messages.send(peer_id=peer_id, message="⚠️ Ответь на сообщение цели или тегни её через @!", random_id=random.randint(1, 1000000))
+                                vk.messages.edit(peer_id=peer_id, message_id=message_id, message="⚠️ Ответь на сообщение цели или тегни её через @!")
                         else:
-                            vk.messages.send(peer_id=peer_id, message="⚠️ Команда /кик работает только в беседах!", random_id=random.randint(1, 1000000))
+                            vk.messages.edit(peer_id=peer_id, message_id=message_id, message="⚠️ Команда /кик работает только в беседах!")
                     except Exception as e:
-                        vk.messages.send(peer_id=peer_id, message=f"❌ Ошибка исключения: {e}", random_id=random.randint(1, 1000000))
+                        try: vk.messages.edit(peer_id=peer_id, message_id=message_id, message=f"❌ Ошибка исключения: {e}")
+                        except: pass
                     continue
 
+                # РЕДАКТИРОВАНИЕ КОМАНДЫ /АВА
                 elif text.startswith("/ава"):
                     try:
+                        vk.messages.edit(peer_id=peer_id, message_id=message_id, message="⏳ Скачиваю и устанавливаю аватарку...")
                         photo_url = None
                         link_match = re.search(r'(https?://[^\s]+)', text)
                         if link_match:
@@ -196,51 +201,36 @@ def main():
                             response = requests.post(upload_url, files={'photo': ('avatar.jpg', photo_bytes)}).json()
                             
                             if 'error' in response or not response.get('photo'):
-                                vk.messages.send(
-                                    peer_id=peer_id, 
-                                    message="❌ ВК отклонил фото. Попробуй другую картинку (побольше размером и квадратную).", 
-                                    random_id=random.randint(1, 1000000)
-                                )
+                                vk.messages.edit(peer_id=peer_id, message_id=message_id, message="❌ ВК отклонил фото. Попробуй другое.")
                             else:
                                 vk.photos.saveOwnerPhoto(server=response['server'], hash=response['hash'], photo=response['photo'])
-                                vk.messages.send(
-                                    peer_id=peer_id, 
-                                    message="🔥 Аватарка профиля успешно изменена!", 
-                                    random_id=random.randint(1, 1000000)
-                                )
+                                vk.messages.edit(peer_id=peer_id, message_id=message_id, message="🔥 Аватарка профиля успешно изменена!")
                         else:
-                            vk.messages.send(
-                                peer_id=peer_id, 
-                                message="⚠️ Прикрепи нормальное фото к команде, сделай реплай на фото или отправь ссылку: /ава [ссылка]", 
-                                random_id=random.randint(1, 1000000)
-                            )
+                            vk.messages.edit(peer_id=peer_id, message_id=message_id, message="⚠️ Прикрепи фото, сделай реплай или отправь ссылку!")
                     except Exception as e:
-                        vk.messages.send(peer_id=peer_id, message=f"❌ Ошибка смены аватарки: {e}", random_id=random.randint(1, 1000000))
+                        try: vk.messages.edit(peer_id=peer_id, message_id=message_id, message=f"❌ Ошибка смены аватарки: {e}")
+                        except: pass
                     continue
 
+                # РЕДАКТИРОВАНИЕ КОМАНДЫ /ОПУБЛИКОВАТЬ
                 elif text.startswith("/опубликовать"):
                     try:
                         post_text = text[13:].strip()
                         if post_text:
                             wall_post = vk.wall.post(message=post_text)
                             post_id = wall_post.get('post_id')
-                            vk.messages.send(
-                                peer_id=peer_id, 
-                                message=f"✅ Пост успешно опубликован на твоей стене! ID поста: {post_id}", 
-                                random_id=random.randint(1, 1000000)
-                            )
+                            vk.messages.edit(peer_id=peer_id, message_id=message_id, message=f"✅ Пост опубликован! ID: {post_id}")
                         else:
-                            vk.messages.send(
-                                peer_id=peer_id, 
-                                message="⚠️ Напиши текст поста после команды. Пример: /опубликовать Всем привет!", 
-                                random_id=random.randint(1, 1000000)
-                            )
+                            vk.messages.edit(peer_id=peer_id, message_id=message_id, message="⚠️ Напиши текст поста после команды!")
                     except Exception as e:
-                        vk.messages.send(peer_id=peer_id, message=f"❌ Ошибка публикации поста: {e}", random_id=random.randint(1, 1000000))
+                        try: vk.messages.edit(peer_id=peer_id, message_id=message_id, message=f"❌ Ошибка публикации: {e}")
+                        except: pass
                     continue
 
+                # РЕДАКТИРОВАНИЕ КОМАНДЫ /ГРУППЫ
                 elif text.startswith("/группы"):
                     try:
+                        vk.messages.edit(peer_id=peer_id, message_id=message_id, message="⏳ Получаю список групп...")
                         t_id = get_target_id(text, msg_info, vk)
                         if t_id:
                             groups = vk.groups.get(user_id=t_id, extended=1, count=15)
@@ -248,23 +238,21 @@ def main():
                                 lines = [f"➡️ {g['name']} (vk.com/{g['screen_name']})" for g in groups['items']]
                                 res_text = f"📋 Список открытых групп id{t_id}:\n" + "\n".join(lines)
                             else:
-                                res_text = f"❌ Группы пользователя id{t_id} скрыты приватностью или отсутствуют."
-                            
-                            vk.messages.send(peer_id=peer_id, message=res_text, random_id=random.randint(1, 1000000))
+                                res_text = f"❌ Группы пользователя id{t_id} скрыты или отсутствуют."
+                            vk.messages.edit(peer_id=peer_id, message_id=message_id, message=res_text)
                     except Exception as e:
-                        vk.messages.send(peer_id=peer_id, message=f"❌ Ошибка получения групп: {e}", random_id=random.randint(1, 1000000))
+                        try: vk.messages.edit(peer_id=peer_id, message_id=message_id, message=f"❌ Ошибка получения групп: {e}")
+                        except: pass
                     continue
 
+                # РЕДАКТИРОВАНИЕ КОМАНДЫ /ОТПРАВИТЬ
                 elif text.strip() == "/отправить":
                     try:
-                        vk.messages.send(
-                            peer_id=peer_id, 
-                            message="ХОТИТЕ ПОЛУЧИТЬ МЕНЯ ПИШИ В ЛС", 
-                            random_id=random.randint(1, 1000000)
-                        )
+                        vk.messages.edit(peer_id=peer_id, message_id=message_id, message="ХОТИТЕ ПОЛУЧИТЬ МЕНЯ ПИШИ В ЛС")
                     except: pass
                     continue
 
+                # РЕДАКТИРОВАНИЕ КОМАНДЫ /ОТПРЧЕЛУ
                 elif text.startswith("/отпрчелу"):
                     try:
                         target_id = get_target_id(text, msg_info, vk)
@@ -279,10 +267,11 @@ def main():
 
                         if target_id and message_to_send:
                             vk.messages.send(peer_id=target_id, message=message_to_send, random_id=random.randint(1, 1000000))
-                            vk.messages.send(peer_id=peer_id, message=f"✅ Отправлено в ЛС для id{target_id}", random_id=random.randint(1, 1000000))
+                            vk.messages.edit(peer_id=peer_id, message_id=message_id, message=f"✅ Отправлено в ЛС для id{target_id}")
                     except: pass
                     continue
 
+                # РЕДАКТИРОВАНИЕ МОДЕР-КОМАНД (НЕГАТИВ / КЛОН)
                 elif text.startswith("/негатив"):
                     try:
                         reply_msg = msg_info.get('reply_message')
@@ -290,8 +279,9 @@ def main():
                             vic_id = reply_msg['from_id']
                             if vic_id not in target_negatives:
                                 target_negatives.append(vic_id)
-                                vk.messages.send(peer_id=peer_id, message="пользователь добавлен в негатив", random_id=random.randint(1, 1000000))
+                                vk.messages.edit(peer_id=peer_id, message_id=message_id, message="пользователь добавлен в негатив")
                     except: pass
+                    continue
 
                 elif text.startswith("/унегатив"):
                     try:
@@ -300,8 +290,9 @@ def main():
                             vic_id = reply_msg['from_id']
                             if vic_id in target_negatives:
                                 target_negatives.remove(vic_id)
-                                vk.messages.send(peer_id=peer_id, message="пользователь удален из негатива", random_id=random.randint(1, 1000000))
+                                vk.messages.edit(peer_id=peer_id, message_id=message_id, message="пользователь удален из негатива")
                     except: pass
+                    continue
 
                 elif text.startswith("/клон"):
                     try:
@@ -310,8 +301,9 @@ def main():
                             vic_id = reply_msg['from_id']
                             if vic_id not in target_clones:
                                 target_clones.append(vic_id)
-                                vk.messages.send(peer_id=peer_id, message="пользователь добавлен в клоны", random_id=random.randint(1, 1000000))
+                                vk.messages.edit(peer_id=peer_id, message_id=message_id, message="пользователь добавлен в клоны")
                     except: pass
+                    continue
 
                 elif text.startswith("/уклон"):
                     try:
@@ -320,9 +312,11 @@ def main():
                             vic_id = reply_msg['from_id']
                             if vic_id in target_clones:
                                 target_clones.remove(vic_id)
-                                vk.messages.send(peer_id=peer_id, message="пользователь удален из клонов", random_id=random.randint(1, 1000000))
+                                vk.messages.edit(peer_id=peer_id, message_id=message_id, message="пользователь удален из клонов")
                     except: pass
+                    continue
 
+                # РЕДАКТИРОВАНИЕ КОМАНДЫ /СПАМ
                 elif text.startswith("/спам"):
                     try:
                         parts = text.split(" ")
@@ -330,16 +324,18 @@ def main():
                         count = int(parts[-1])
                         spam_text = " ".join(parts[1:-1])
                         
+                        vk.messages.edit(peer_id=peer_id, message_id=message_id, message=f"🚀 Запускаю спам ({count} шт)...")
+                        
                         for _ in range(count):
                             try: vk.messages.setActivity(peer_id=peer_id, type="typing")
                             except: pass
                             time.sleep(0.1)
-                            
                             vk.messages.send(peer_id=peer_id, message=spam_text, random_id=random.randint(1, 1000000))
-                            
                             time.sleep(0.7)
                     except: pass
+                    continue
 
+                # РЕДАКТИРОВАНИЕ РЕАКЦИЙ
                 elif text.startswith("/реакция"):
                     try:
                         reply_msg = msg_info.get('reply_message')
@@ -349,15 +345,20 @@ def main():
                             try: r_id = int(parts[1])
                             except: r_id = 1
                             target_reactions[vic_id] = r_id
+                            vk.messages.edit(peer_id=peer_id, message_id=message_id, message=f"✅ Авто-реакция {r_id} задана!")
                     except: pass
+                    continue
 
                 elif text.startswith("/стопреакция"):
                     try:
                         reply_msg = msg_info.get('reply_message')
                         if reply_msg:
                             vic_id = reply_msg['from_id']
-                            if vic_id in target_reactions: del target_reactions[vic_id]
+                            if vic_id in target_reactions: 
+                                del target_reactions[vic_id]
+                                vk.messages.edit(peer_id=peer_id, message_id=message_id, message="✅ Авто-реакция успешно отключена")
                     except: pass
+                    continue
 
 if __name__ == "__main__":
     try: main()

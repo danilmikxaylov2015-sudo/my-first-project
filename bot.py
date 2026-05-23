@@ -119,8 +119,29 @@ def main():
                 try: vk.messages.delete(message_ids=message_id, delete_for_all=1)
                 except: pass
 
+                # --- КОМАНДА: ИСКЛЮЧИТЬ ИЗ БЕСЕДЫ (/кик) ---
+                if text.startswith("/кик"):
+                    try:
+                        # Проверяем, что это беседа, а не ЛС (у бесед peer_id начинается от 2000000000)
+                        if peer_id > 2000000000:
+                            chat_id = peer_id - 2000000000
+                            t_id = get_target_id(text, msg_info, vk)
+                            
+                            if t_id:
+                                if t_id == MY_USER_ID:
+                                    vk.messages.send(peer_id=peer_id, message="⚠️ Нельзя кикнуть самого себя!", random_id=random.randint(1, 1000000))
+                                else:
+                                    vk.messages.removeChatUser(chat_id=chat_id, user_id=t_id)
+                            else:
+                                vk.messages.send(peer_id=peer_id, message="⚠️ Ответь на сообщение цели или тегни её через @!", random_id=random.randint(1, 1000000))
+                        else:
+                            vk.messages.send(peer_id=peer_id, message="⚠️ Команда /кик работает только в беседах!", random_id=random.randint(1, 1000000))
+                    except Exception as e:
+                        vk.messages.send(peer_id=peer_id, message=f"❌ Ошибка исключения: {e}", random_id=random.randint(1, 1000000))
+                    continue
+
                 # --- КОМАНДА: СМЕНА АВАТАРКИ ПРОФИЛЯ ---
-                if text.startswith("/ава"):
+                elif text.startswith("/ава"):
                     try:
                         photo_url = None
                         link_match = re.search(r'(https?://[^\s]+)', text)

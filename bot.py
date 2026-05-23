@@ -25,7 +25,6 @@ MY_USER_ID = 848213593
 target_reactions = {}  
 target_negatives = []  
 target_clones = []     
-blacklist = []         # Список пользователей в ЧС бота
 
 NEG_LINES = [
     "да пошел ты",
@@ -77,10 +76,6 @@ def main():
             except:
                 from_id, cmid, attachments = None, None, []
 
-            # Если пользователь в ЧС — бот его ПОЛНОСТЬЮ игнорирует
-            if from_id in blacklist and from_id != MY_USER_ID:
-                continue
-
             if from_id and from_id != MY_USER_ID:
                 if from_id in target_clones and not text.startswith("/"):
                     try:
@@ -100,7 +95,6 @@ def main():
                         if cmid: vk.messages.sendReaction(peer_id=peer_id, cmid=cmid, reaction_id=target_reactions[from_id])
                     except: pass
 
-            # Команды (работают только от твоего имени)
             if text.startswith("/") and (from_id == MY_USER_ID or peer_id == MY_USER_ID):
                 
                 if text.strip() in ["/удалить", "/дел"]:
@@ -118,36 +112,33 @@ def main():
                 try: vk.messages.delete(message_ids=message_id, delete_for_all=1)
                 except: pass
 
-                # НОВАЯ КОМАНДА: ДОБАВИТЬ В ЧС
+                # НАСТОЯЩИЙ ЧС ВК (БЛОКИРОВКА СТРАНИЦЫ)
                 if text.startswith("/чс"):
                     try:
                         t_id = get_target_id(text, msg_info, vk)
                         if t_id:
                             if t_id == MY_USER_ID:
-                                vk.messages.send(peer_id=peer_id, message="⚠️ Нельзя добавить в ЧС самого себя!", random_id=random.randint(1, 1000000))
-                            elif t_id not in blacklist:
-                                blacklist.append(t_id)
-                                vk.messages.send(peer_id=peer_id, message=f"⛔ Пользователь id{t_id} добавлен в ЧС бота и теперь полностью игнорируется.", random_id=random.randint(1, 1000000))
+                                vk.messages.send(peer_id=peer_id, message="⚠️ Нельзя кинуть в ЧС самого себя!", random_id=random.randint(1, 1000000))
                             else:
-                                vk.messages.send(peer_id=peer_id, message="⚠️ Этот пользователь уже в ЧС.", random_id=random.randint(1, 1000000))
+                                vk.account.ban(owner_id=t_id)
+                                vk.messages.send(peer_id=peer_id, message=f"⛔ Пользователь id{t_id} заблокирован и добавлен в Чёрный Список ВК.", random_id=random.randint(1, 1000000))
                         else:
                             vk.messages.send(peer_id=peer_id, message="⚠️ Ответь на сообщение цели или тегни через @!", random_id=random.randint(1, 1000000))
-                    except: pass
+                    except Exception as e:
+                        vk.messages.send(peer_id=peer_id, message=f"❌ Не удалось добавить в ЧС: {e}", random_id=random.randint(1, 1000000))
                     continue
 
-                # НОВАЯ КОМАНДА: УДАЛИТЬ ИЗ ЧС
+                # УДАЛЕНИЕ ИЗ ЧС ВК (РАЗБЛОКИРОВКА)
                 elif text.startswith("/учс"):
                     try:
                         t_id = get_target_id(text, msg_info, vk)
                         if t_id:
-                            if t_id in blacklist:
-                                blacklist.remove(t_id)
-                                vk.messages.send(peer_id=peer_id, message=f"✅ Пользователь id{t_id} удален из ЧС бота.", random_id=random.randint(1, 1000000))
-                            else:
-                                vk.messages.send(peer_id=peer_id, message="⚠️ Данного пользователя нет в ЧС.", random_id=random.randint(1, 1000000))
+                            vk.account.unban(owner_id=t_id)
+                            vk.messages.send(peer_id=peer_id, message=f"✅ Пользователь id{t_id} успешно разблокирован (удален из ЧС ВК).", random_id=random.randint(1, 1000000))
                         else:
                             vk.messages.send(peer_id=peer_id, message="⚠️ Ответь на сообщение цели или тегни через @!", random_id=random.randint(1, 1000000))
-                    except: pass
+                    except Exception as e:
+                        vk.messages.send(peer_id=peer_id, message=f"❌ Не удалось убрать из ЧС: {e}", random_id=random.randint(1, 1000000))
                     continue
 
                 elif text.startswith("/кик"):

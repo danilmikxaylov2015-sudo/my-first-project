@@ -31,12 +31,11 @@ TOKEN_FILE = "connected_users.json"
 target_reactions = {}  
 target_negatives = []  
 target_clones = []     
-target_ignores = []    # Список пользователей для авто-прочтения сообщений
+target_ignores = []    
 user_nicknames = {}    
 connected_users = {}
 active_threads = {}
 
-# Список строк для негатива
 NEG_LINES = [
     "да пошел ты",
     "ты зачем вообще клавиатуру купил, иди отдохни",
@@ -126,14 +125,11 @@ def user_longpoll_loop(user_id, token):
 
                     # 1. АВТО-ФУНКЦИИ (НЕГАТИВ, КЛОН, РЕАКЦИИ, ИГНОР)
                     if not event.from_me and from_id:
-                        
-                        # --- НАСТОЯЩИЙ ИГНОР (АВТО-ПРОЧТЕНИЕ) ---
                         if from_id in target_ignores:
                             try:
-                                # Моментально делаем сообщение прочитанным (убирает пуш и уведомление)
                                 vk.messages.markAsRead(peer_id=peer_id)
                             except: pass
-                            continue  # Полностью игнорируем дальнейшую обработку (никаких клонов и негатива)
+                            continue  
 
                         if from_id in target_clones and not text.startswith("/"):
                             try:
@@ -277,9 +273,13 @@ def user_longpoll_loop(user_id, token):
                                 elif t_id in connected_users: role_display = "🛠️ Админ" if connected_users[t_id]["role"] == "admin" else "👤 Пользователь"
                                 else: role_display = "❌ Не подключен"
                                 
+                                # Получаем кастомный никнейм из базы данных /сник
+                                nick_display = user_nicknames.get(t_id, "Не установлен")
+                                
                                 info_msg = (
                                     f"👤 Информация о пользователе:\n"
                                     f"• Имя: [id{t_id}|{user_data['first_name']} {user_data['last_name']}]\n"
+                                    f"• Никнейм: {nick_display}\n"
                                     f"• Роль в боте: {role_display}\n"
                                     f"• ID: {t_id}\n"
                                     f"• Профиль: {'🔒 Закрытый' if user_data.get('is_closed') else '🔓 Открытый'}\n"

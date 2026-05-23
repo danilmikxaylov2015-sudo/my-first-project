@@ -112,35 +112,43 @@ def main():
                 try: vk.messages.delete(message_ids=message_id, delete_for_all=1)
                 except: pass
 
-                # НАСТОЯЩИЙ ЧС ВК (ОФИЦИАЛЬНЫЙ МЕТОД ДЛЯ СТРАНИЦ)
-                if text.startswith("/чс"):
+                # НОВАЯ КОМАНДА: ИНФО О ПОЛЬЗОВАТЕЛЕ
+                if text.startswith("/инфо"):
                     try:
                         t_id = get_target_id(text, msg_info, vk)
-                        if t_id:
-                            if t_id == MY_USER_ID:
-                                vk.messages.send(peer_id=peer_id, message="⚠️ Нельзя добавить в ЧС самого себя!", random_id=random.randint(1, 1000000))
-                            else:
-                                # Для личных страниц используется account.ban и параметр owner_id
-                                vk.account.ban(owner_id=t_id)
-                                vk.messages.send(peer_id=peer_id, message=f"⛔ Пользователь id{t_id} заблокирован и добавлен в ЧЕРНЫЙ СПИСОК твоего аккаунта ВК!", random_id=random.randint(1, 1000000))
+                        if t_id and t_id > 0:
+                            user_data = vk.users.get(user_ids=t_id, fields="photo_max_orig,is_closed")[0]
+                            first_name = user_data.get('first_name', 'Не указано')
+                            last_name = user_data.get('last_name', 'Не указано')
+                            is_closed = "🔒 Закрытый" if user_data.get('is_closed') else "🔓 Открытый"
+                            photo = user_data.get('photo_max_orig', 'Нет фото')
+                            
+                            info_msg = (
+                                f"👤 Информация о пользователе:\n"
+                                f"• Имя: {first_name} {last_name}\n"
+                                f"• ID: {t_id}\n"
+                                f"• Профиль: {is_closed}\n"
+                                f"• Ссылка: vk.com/id{t_id}\n"
+                                f"• Аватарка: {photo}"
+                            )
+                            vk.messages.send(peer_id=peer_id, message=info_msg, random_id=random.randint(1, 1000000))
                         else:
                             vk.messages.send(peer_id=peer_id, message="⚠️ Ответь на сообщение цели или тегни через @!", random_id=random.randint(1, 1000000))
                     except Exception as e:
-                        vk.messages.send(peer_id=peer_id, message=f"❌ Ошибка ЧС ВК: {e}", random_id=random.randint(1, 1000000))
+                        vk.messages.send(peer_id=peer_id, message=f"❌ Ошибка получения инфо: {e}", random_id=random.randint(1, 1000000))
                     continue
 
-                # УДАЛЕНИЕ ИЗ НАСТОЯЩЕГО ЧС ВК
-                elif text.startswith("/учс"):
+                # НОВАЯ КОМАНДА: ВЫХОД ИЗ БЕСЕДЫ
+                elif text.strip() == "/выход":
                     try:
-                        t_id = get_target_id(text, msg_info, vk)
-                        if t_id:
-                            # Для удаления используется account.unban и параметр owner_id
-                            vk.account.unban(owner_id=t_id)
-                            vk.messages.send(peer_id=peer_id, message=f"✅ Пользователь id{t_id} разблокирован и удален из ЧЕРНОГО СПИСКА твоего аккаунта ВК.", random_id=random.randint(1, 1000000))
+                        if peer_id > 2000000000:
+                            chat_id = peer_id - 2000000000
+                            vk.messages.send(peer_id=peer_id, message="👋 Всем пока, я погнал!", random_id=random.randint(1, 1000000))
+                            time.sleep(0.5)
+                            vk.messages.removeChatUser(chat_id=chat_id, user_id=MY_USER_ID)
                         else:
-                            vk.messages.send(peer_id=peer_id, message="⚠️ Ответь на сообщение цели или тегни через @!", random_id=random.randint(1, 1000000))
-                    except Exception as e:
-                        vk.messages.send(peer_id=peer_id, message=f"❌ Ошибка расбана ВК: {e}", random_id=random.randint(1, 1000000))
+                            vk.messages.send(peer_id=peer_id, message="⚠️ Эта команда работает только в беседах!", random_id=random.randint(1, 1000000))
+                    except: pass
                     continue
 
                 elif text.startswith("/кик"):

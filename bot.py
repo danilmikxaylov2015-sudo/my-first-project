@@ -27,7 +27,7 @@ def main():
     vk = vk_session.get_api()
     longpoll = VkLongPoll(vk_session)
     
-    print("🚀 Бот обновлен! Теперь все команды через слэш (/)")
+    print("🚀 Бот обновлен! Спам теперь без цифр.")
 
     for event in longpoll.listen():
         if event.type == VkEventType.MESSAGE_NEW:
@@ -41,18 +41,13 @@ def main():
             except:
                 from_id = None
 
+            # Работаем, только если пишет другой человек
             if from_id and from_id != MY_USER_ID:
-                # --- 1. АВТООТВЕТ НА ТЕГИ И ЛС ---
                 text_lower = text.lower()
-                is_mention = (
-                    f"id{MY_USER_ID}" in text_lower or 
-                    "данил" in text_lower or 
-                    "danil_mikxaylov" in text_lower
-                )
-                is_dm = peer_id == from_id 
-                
-                # Реагируем, только если сообщение не начинается со слэша (чтобы случайно не триггериться на чужие команды)
-                if (is_mention or is_dm) and not text.startswith("/"):
+                is_dm = peer_id == from_id
+
+                # --- 1. АВТООТВЕТ: ТОЛЬКО НА ТЕГ @danil_mikxaylov И ТОЛЬКО В БЕСЕДАХ ---
+                if not is_dm and "@danil_mikxaylov" in text_lower and not text.startswith("/"):
                     try:
                         vk.messages.send(
                             peer_id=peer_id,
@@ -90,23 +85,24 @@ def main():
                     except Exception as e:
                         print(f"Ошибка команды /отправить: {e}")
 
-                # Скоростной спам: /спам [текст] [кол-во]
+                # Чистый спам без цифр: /спам [текст] [кол-во]
                 elif text.startswith("/спам"):
                     try:
                         parts = text.split(" ")
                         if len(parts) < 3: continue
+                        
                         count = int(parts[-1])
                         spam_text = " ".join(parts[1:-1])
                         
                         for _ in range(count):
-                            safe_text = f"{spam_text} [{random.randint(100, 999)}]"
                             vk.messages.send(
                                 peer_id=peer_id, 
-                                message=safe_text, 
+                                message=spam_text, # Отправляем чистый текст, как ты просил
                                 random_id=random.randint(1, 1000000)
                             )
                             time.sleep(0.5)
-                    except: pass
+                    except Exception as e:
+                        print(f"Ошибка спама: {e}")
 
                 # Включение реакций: /реакция [id] (в ответ)
                 elif text.startswith("/реакция"):

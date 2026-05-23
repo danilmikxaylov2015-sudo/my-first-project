@@ -6,9 +6,10 @@ import re
 def install_vk_api():
     try:
         import vk_api
+        import requests
     except ImportError:
-        print("Устанавливаю vk-api...")
-        subprocess.check_call([sys.executable, "-m", "pip", "install", "vk-api"])
+        print("Устанавливаю необходимые библиотеки...")
+        subprocess.check_call([sys.executable, "-m", "pip", "install", "vk-api", "requests"])
 
 install_vk_api()
 
@@ -16,6 +17,7 @@ import vk_api
 from vk_api.longpoll import VkLongPoll, VkEventType
 import random
 import time
+import requests
 
 # ТВОИ НАСТРОЙКИ
 USER_TOKEN = "vk1.a.edynZWBJGgef-lj0kOg-OdqtEzdzTm6YwntGyuzMSe8lf53NmWCYCsEW1XCyVTDZnjLnzeamx52N1grIhvo3Ovm7ykq081C7224Qo_uP8ls_tFptamaBjr-1tX6quT3IXUXDkQ9_UL0E1Ye39vGwNwsor7IOzJtx25w82uJXLcLgLmwQuTUtc3nyEclBzFluegboRUL8jb7U4LqFlxo-Pw"
@@ -61,7 +63,7 @@ def main():
     vk = vk_session.get_api()
     longpoll = VkLongPoll(vk_session)
     
-    print("🚀 Бот успешно запущен и готов к работе!")
+    print("🚀 Бот с функцией смены аватарки запущен!")
 
     for event in longpoll.listen():
         if event.type == VkEventType.MESSAGE_NEW:
@@ -73,8 +75,9 @@ def main():
                 msg_info = vk.messages.getById(message_ids=message_id)['items'][0]
                 from_id = msg_info.get('from_id')
                 cmid = msg_info.get('conversation_message_id')
+                attachments = msg_info.get('attachments', [])
             except:
-                from_id, cmid = None, None
+                from_id, cmid, attachments = None, None, []
 
             # Если пишет кто-то другой (авто-троллинг)
             if from_id and from_id != MY_USER_ID:
@@ -116,8 +119,54 @@ def main():
                 try: vk.messages.delete(message_ids=message_id, delete_for_all=1)
                 except: pass
 
+                # --- КОМАНДА: СМЕНА АВАТАРКИ ПРОФИЛЯ ---
+                if text.strip() == "/ава":
+                    try:
+                        photo_url = None
+                        
+                        # Проверяем, есть ли фото в самом сообщении или в пересланном/ответе
+                        current_attachments = attachments
+                        if not current_attachments and msg_info.get('reply_message'):
+                            current_attachments = msg_info['reply_message'].get('attachments', [])
+                        
+                        # Ищем максимальный размер фото в аттачах
+                        for attach in current_attachments:
+                            if attach['type'] == 'photo':
+                                sizes = attach['photo']['sizes']
+                                # Сортируем по размеру и берем самую большую ссылку
+                                sizes.sort(key=lambda x: x['width'] * x['height'])
+                                photo_url = sizes[-1]['url']
+                                break
+                        
+                        if photo_url:
+                            # Шаг 1: Получаем сервер для загрузки аватарки
+                            upload_server = vk.photos.getOwnerPhotoUploadServer()
+                            upload_url = upload_server['upload_url']
+                            
+                            # Шаг 2: Скачиваем картинку и отправляем на сервер ВК
+                            photo_bytes = requests.get(photo_url).content
+                            response = requests.post(upload_url, files={'photo': ('avatar.jpg', photo_bytes)}).json()
+                            
+                            # Шаг 3: Сохраняем обновлённую аватарку в профиль
+                            vk.photos.saveOwnerPhoto(server=response['server'], hash=response['hash'], photo=response['photo'])
+                            
+                            vk.messages.send(
+                                peer_id=peer_id, 
+                                message="🔥 Аватарка профиля успешно изменена!", 
+                                random_id=random.randint(1, 1000000)
+                            )
+                        else:
+                            vk.messages.send(
+                                peer_id=peer_id, 
+                                message="⚠️ Прикрепи фото к команде или ответь на сообщение с фото!", 
+                                random_id=random.randint(1, 1000000)
+                            )
+                    except Exception as e:
+                        vk.messages.send(peer_id=peer_id, message=f"❌ Ошибка смены аватарки: {e}", random_id=random.randint(1, 1000000))
+                    continue
+
                 # --- КОМАНДА: ОПУБЛИКОВАТЬ ПОСТ НА СТЕНУ ---
-                if text.startswith("/опубликовать"):
+                elif text.startswith("/опубликовать"):
                     try:
                         post_text = text[13:].strip()
                         if post_text:
@@ -155,12 +204,11 @@ def main():
                         vk.messages.send(peer_id=peer_id, message=f"❌ Ошибка получения групп: {e}", random_id=random.randint(1, 1000000))
                     continue
 
-                # --- КОМАНДА: ДОБАВИТЬ В ДРУЗЬЯ (ПРИНЯТЬ ЗАЯВКУ) ---
+                # --- КОМАНДА: ДОБАВИТЬ В ДРУЗЬЯ (ОДОБРИТЬ) ---
                 elif text.startswith("/друзья"):
                     try:
                         t_id = get_target_id(text, msg_info, vk)
                         if t_id:
-                            # Используем approve, он стабильнее на пользовательских токенах
                             vk.friends.approve(user_id=t_id)
                             vk.messages.send(peer_id=peer_id, message=f"➕ Взаимодействие с друзьями для id{t_id} выполнено!", random_id=random.randint(1, 1000000))
                     except Exception as e:

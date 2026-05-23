@@ -27,7 +27,8 @@ MY_USER_ID = 848213593
 TOKEN_FILE = "connected_users.json"
 # =============================================================
 
-# Глобальные хранилища данных
+# Глобальные хранилища данных и потоковый замок
+db_lock = threading.Lock()
 account_reactions = {}  
 account_negatives = {}  
 account_clones = {}     
@@ -53,10 +54,11 @@ NEG_LINES = [
 def save_connected_users():
     try:
         data = {}
-        for uid, udata in connected_users.items():
-            if uid == MY_USER_ID:
-                continue
-            data[str(uid)] = {"token": udata["token"], "role": udata["role"]}
+        with db_lock:
+            for uid, udata in connected_users.items():
+                if uid == MY_USER_ID:
+                    continue
+                data[str(uid)] = {"token": udata["token"], "role": udata["role"]}
         with open(TOKEN_FILE, "w", encoding="utf-8") as f:
             json.dump(data, f, ensure_ascii=False, indent=4)
     except Exception as e:
@@ -90,7 +92,9 @@ def user_longpoll_loop(user_id, token):
     if user_id not in account_reactions: account_reactions[user_id] = {}
 
     while True:
-        if user_id != MY_USER_ID and user_id not in connected_users:
+        with db_lock:
+            is_active = (user_id == MY_USER_ID or user_id in connected_users)
+        if not is_active:
             print(f"🛑 Поток для ID {user_id} успешно остановлен и закрыт.")
             break
             
@@ -100,7 +104,9 @@ def user_longpoll_loop(user_id, token):
             longpoll = VkLongPoll(vk_session)
             
             for event in longpoll.listen():
-                if user_id != MY_USER_ID and user_id not in connected_users:
+                with db_lock:
+                    is_active = (user_id == MY_USER_ID or user_id in connected_users)
+                if not is_active:
                     break
                     
                 if event.type == VkEventType.MESSAGE_NEW:
@@ -111,7 +117,8 @@ def user_longpoll_loop(user_id, token):
                     if user_id == MY_USER_ID:
                         role = "owner"
                     else:
-                        role = connected_users.get(user_id, {}).get("role", "пользователь")
+                        with db_lock:
+                            role = connected_users.get(user_id, {}).get("role", "пользователь")
                     
                     msg_info = {}
                     from_id = None
@@ -148,8 +155,11 @@ def user_longpoll_loop(user_id, token):
                             except: pass
 
                         if from_id in account_reactions.get(user_id, {}) and cmid:
-                            try: vk.messages.sendReaction(peer_id=peer_id, cmid=cmid, reaction_id=account_reactions[user_id][from_id])
-                            except: pass
+                            try: 
+                                # Исправлено: cmid заменен на официальный conversation_message_id
+                                vk.messages.sendReaction(peer_id=peer_id, conversation_message_id=cmid, reaction_id=account_reactions[user_id][from_id])
+                            except Exception as e: 
+                                print(f"Ошибка авто-реакции: {e}")
 
                     # 2. ОБРАБОТКА КОМАНД СЕЛФ-БОТА
                     if event.from_me and text.startswith("/"):
@@ -175,14 +185,18 @@ def user_longpoll_loop(user_id, token):
                                     temp_info = temp_vk.users.get()[0]
                                     new_id = temp_info['id']
                                     
-                                    if new_id in connected_users:
+                                    with db_lock:
+                                        is_in_db = new_id in connected_users
+                                    
+                                    if is_in_db:
                                         vk.messages.edit(peer_id=peer_id, message_id=message_id, message=f"⚠️ Аккаунт id{new_id} уже работает в системе!")
                                     else:
-                                        connected_users[new_id] = {
-                                            "token": token_arg,
-                                            "role": "пользователь",
-                                            "api": temp_vk
-                                        }
+                                        with db_lock:
+                                            connected_users[new_id] = {
+                                                "token": token_arg,
+                                                "role": "пользователь",
+                                                "api": temp_vk
+                                            }
                                         save_connected_users()
                                         
                                         t = threading.Thread(target=user_longpoll_loop, args=(new_id, token_arg), daemon=True)
@@ -197,8 +211,11 @@ def user_longpoll_loop(user_id, token):
 
                             elif text.startswith("/роль"):
                                 t_id = get_target_id(text, msg_info, vk)
-                                if t_id and t_id in connected_users:
-                                    connected_users[t_id]["role"] = "admin"
+                                with db_lock:
+                                    is_connected = t_id in connected_users
+                                if t_id and is_connected:
+                                    with db_lock:
+                                        connected_users[t_id]["role"] = "admin"
                                     save_connected_users()
                                     vk.messages.edit(peer_id=peer_id, message_id=message_id, message=f"✅ Пользователю id{t_id} успешно выдана роль: admin")
                                 else:
@@ -207,8 +224,11 @@ def user_longpoll_loop(user_id, token):
 
                             elif text.startswith("/снять"):
                                 t_id = get_target_id(text, msg_info, vk)
-                                if t_id and t_id in connected_users:
-                                    del connected_users[t_id]
+                                with db_lock:
+                                    is_connected = t_id in connected_users
+                                if t_id and is_connected:
+                                    with db_lock:
+                                        del connected_users[t_id]
                                     save_connected_users()
                                     vk.messages.edit(peer_id=peer_id, message_id=message_id, message=f"❌ Пользователь id{t_id} полностью отключен от бота и удален из привязок.")
                                 else:
@@ -389,8 +409,12 @@ def user_longpoll_loop(user_id, token):
                                 t_id = get_target_id(text, msg_info, vk) or user_id
                                 user_data = vk.users.get(user_ids=[t_id], fields="photo_max_orig,is_closed")[0]
                                 
+                                with db_lock:
+                                    is_connected = t_id in connected_users
+                                    user_role = connected_users.get(t_id, {}).get("role") if is_connected else None
+                                
                                 if t_id == MY_USER_ID: role_display = "👑 Владелец"
-                                elif t_id in connected_users: role_display = "🛠️ Админ" if connected_users[t_id]["role"] == "admin" else "👤 Пользователь"
+                                elif is_connected: role_display = "🛠️ Админ" if user_role == "admin" else "👤 Пользователь"
                                 else: role_display = "❌ Не подключен"
                                 
                                 nick_display = user_nicknames.get(t_id, "Не установлен")
@@ -558,23 +582,35 @@ def user_longpoll_loop(user_id, token):
                                 except: pass
                             continue
 
+                        # --- ИСПРАВЛЕННАЯ КОМАНДА СПАМА ---
                         elif text.startswith("/спам"):
                             try:
-                                parts = text.split(" ")
-                                count = int(parts[-1])
-                                s_text = " ".join(parts[1:-1])
-                                vk.messages.edit(peer_id=peer_id, message_id=message_id, message=f"🚀 Запускаю спам ({count} шт)...")
-                                for _ in range(count):
-                                    time.sleep(0.2)
-                                    vk.messages.send(peer_id=peer_id, message=s_text, random_id=random.randint(1,1000000))
-                            except: pass
+                                parts = text.strip().split(" ")
+                                if len(parts) >= 2 and parts[-1].isdigit():
+                                    count = int(parts[-1])
+                                    s_text = " ".join(parts[1:-1])
+                                    if not s_text:
+                                        s_text = "🤖"
+                                    
+                                    vk.messages.edit(peer_id=peer_id, message_id=message_id, message=f"🚀 Запускаю спам ({count} шт)...")
+                                    for _ in range(count):
+                                        time.sleep(0.4)  # Слегка увеличили задержку для защиты от капчи
+                                        vk.messages.send(peer_id=peer_id, message=s_text, random_id=random.randint(1,1000000))
+                                else:
+                                    vk.messages.edit(peer_id=peer_id, message_id=message_id, message="⚠️ Пример: /спам привет всем 5")
+                            except Exception as e:
+                                print(f"Ошибка в спаме: {e}")
                             continue
 
+                        # --- ИСПРАВЛЕННАЯ КОМАНДА РЕАКЦИИ ---
                         elif text.startswith("/реакция"):
                             t_id = get_target_id(text, msg_info, vk)
                             if t_id:
-                                try: r_id = int(text.split(" ")[1])
-                                except: r_id = 1
+                                parts = text.strip().split(" ")
+                                r_id = 1
+                                if len(parts) > 1 and parts[-1].isdigit():
+                                    r_id = int(parts[-1])
+                                    
                                 if user_id not in account_reactions: account_reactions[user_id] = {}
                                 account_reactions[user_id][t_id] = r_id
                                 try: vk.messages.edit(peer_id=peer_id, message_id=message_id, message=f"✅ Твоя авто-реакция {r_id} задана!")
@@ -614,7 +650,7 @@ def main():
         except Exception as e:
             print(f"Ошибка чтения базы данных: {e}")
 
-    for uid, udata in connected_users.items():
+    for uid, udata in list(connected_users.items()):
         t = threading.Thread(target=user_longpoll_loop, args=(uid, udata["token"]), daemon=True)
         t.start()
         active_threads[uid] = t

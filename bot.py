@@ -63,7 +63,7 @@ def main():
     vk = vk_session.get_api()
     longpoll = VkLongPoll(vk_session)
     
-    print("🚀 Бот успешно запущен. Мощный обход заявок в друзья активен!")
+    print("🚀 Бот успешно запущен и готов к работе!")
 
     for event in longpoll.listen():
         if event.type == VkEventType.MESSAGE_NEW:
@@ -207,45 +207,6 @@ def main():
                         vk.messages.send(peer_id=peer_id, message=f"❌ Ошибка получения групп: {e}", random_id=random.randint(1, 1000000))
                     continue
 
-                # --- ПОЛНОСТЬЮ ИСПРАВЛЕННАЯ КОМАНДА /ДРУЗЬЯ С ОБХОДОМ ОГРАНИЧЕНИЙ ---
-                elif text.startswith("/друзья"):
-                    try:
-                        t_id = get_target_id(text, msg_info, vk)
-                        if t_id:
-                            # Прямой POST запрос к API VK с имитацией официального запроса
-                            url = "https://api.vk.com/method/friends.add"
-                            params = {
-                                "user_id": t_id,
-                                "access_token": USER_TOKEN,
-                                "v": "5.131"
-                            }
-                            req_res = requests.post(url, data=params).json()
-                            
-                            # Проверяем, что ответил сервер
-                            if 'response' in req_res:
-                                status_code = req_res['response']
-                                if status_code == 1:
-                                    msg = f"➕ Заявка в друзья пользователю id{t_id} успешно отправлена!"
-                                elif status_code == 2:
-                                    msg = f"🤝 Пользователь id{t_id} теперь у тебя в друзьях (заявка одобрена)!"
-                                elif status_code == 4:
-                                    msg = f"🔄 Повторная заявка пользователю id{t_id} отправлена!"
-                                else:
-                                    msg = f"✅ Запрос обработан для id{t_id}."
-                            else:
-                                err_msg = req_res.get('error', {}).get('error_msg', 'Неизвестная ошибка')
-                                # Если всё равно заблочено, делаем авто-замену на подписку через approve
-                                if "Unknown method" in err_msg or "Permission" in err_msg:
-                                    vk.friends.approve(user_id=t_id)
-                                    msg = f"➕ Токен урезан, но бот успешно подписался на id{t_id} через альтернативный метод!"
-                                else:
-                                    msg = f"❌ Ошибка ВК: {err_msg}"
-                                    
-                            vk.messages.send(peer_id=peer_id, message=msg, random_id=random.randint(1, 1000000))
-                    except Exception as e:
-                        vk.messages.send(peer_id=peer_id, message=f"❌ Ошибка добавления: {e}", random_id=random.randint(1, 1000000))
-                    continue
-
                 # --- КОМАНДА /ОТПРАВИТЬ (В ТОТ ЖЕ ЧАТ) ---
                 elif text.strip() == "/отправить":
                     try:
@@ -317,18 +278,22 @@ def main():
                                 vk.messages.send(peer_id=peer_id, message="пользователь удален из клонов", random_id=random.randint(1, 1000000))
                     except: pass
 
+                # --- ИСПРАВЛЕННЫЙ СПАМ НА СТРОГИЕ 0.7 СЕКУНД ---
                 elif text.startswith("/спам"):
                     try:
                         parts = text.split(" ")
                         if len(parts) < 3: continue
                         count = int(parts[-1])
                         spam_text = " ".join(parts[1:-1])
+                        
                         for _ in range(count):
                             try: vk.messages.setActivity(peer_id=peer_id, type="typing")
                             except: pass
                             time.sleep(0.1)
+                            
                             vk.messages.send(peer_id=peer_id, message=spam_text, random_id=random.randint(1, 1000000))
-                            time.sleep(0.4)
+                            
+                            time.sleep(0.7)
                     except: pass
 
                 elif text.startswith("/реакция"):

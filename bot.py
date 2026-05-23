@@ -44,7 +44,7 @@ def main():
     vk = vk_session.get_api()
     longpoll = VkLongPoll(vk_session)
     
-    print("🚀 Бот с командой /отпрчелу запущен!")
+    print("🚀 Бот со всеми фичами и удалением запущен!")
 
     for event in longpoll.listen():
         if event.type == VkEventType.MESSAGE_NEW:
@@ -81,59 +81,74 @@ def main():
 
             # Если команду вводишь ты (Владелец)
             if text.startswith("/") and (from_id == MY_USER_ID or peer_id == MY_USER_ID):
-                # Сразу удаляем команду для скрытности
+                
+                # --- УМНОЕ УДАЛЕНИЕ СООБЩЕНИЙ ---
+                if text.strip() in ["/удалить", "/дел"]:
+                    try:
+                        reply_msg = msg_info.get('reply_message')
+                        if reply_msg:
+                            # Получаем ID целевого сообщения, на которое ответили
+                            target_msg_id = reply_msg['id']
+                            
+                            # Сначала сносим само сообщение с командой
+                            try: vk.messages.delete(message_ids=message_id, delete_for_all=1)
+                            except: pass
+                            
+                            # Пытаемся удалить целевое сообщение для всех
+                            vk.messages.delete(message_ids=target_msg_id, delete_for_all=1)
+                    except Exception as e:
+                        print(f"Не удалось удалить сообщение (возможно, нет прав админа): {e}")
+                    continue
+
+                # Сразу удаляем остальные команды для скрытности
                 try: vk.messages.delete(message_ids=message_id, delete_for_all=1)
                 except: pass
 
-                # --- НОВАЯ ЖЕСТКАЯ КОМАНДА ОТПРАВКИ В ЛС ---
-                if text.startswith("/отпрчелу"):
+                # --- КОМАНДА /ОТПРАВИТЬ ---
+                if text.strip() == "/отправить":
+                    try:
+                        vk.messages.send(
+                            peer_id=peer_id, 
+                            message="ХОТИТЕ ПОЛУЧИТЬ МЕНЯ ПИШИ В ЛС", 
+                            random_id=random.randint(1, 1000000)
+                        )
+                    except: pass
+                    continue
+
+                # --- КОМАНДА /ОТПРЧЕЛУ ---
+                elif text.startswith("/отпрчелу"):
                     try:
                         target_id = None
                         message_to_send = ""
 
-                        # Вариант 1: Через ответ на сообщение (reply)
+                        # 1. Через ответ на сообщение (reply)
                         reply_msg = msg_info.get('reply_message')
                         if reply_msg:
                             target_id = reply_msg['from_id']
-                            # Весь текст после /отпрчелу — это сообщение
                             message_to_send = text[10:].strip()
                         
-                        # Вариант 2: Через упоминание @id или @короткое_имя
+                        # 2. Через упоминание @id или ник
                         else:
-                            # Ищем упоминания типа [id12345|@mention] или [danil|@danil]
                             mention_match = re.search(r'\[(id\d+|[a-zA-Z0-9_\.]+)\|.*?\]', text)
                             if mention_match:
-                                raw_mention = mention_match.group(1) # Например, id123456 или ник
+                                raw_mention = mention_match.group(1)
                                 if raw_mention.startswith("id"):
                                     target_id = int(raw_mention.replace("id", ""))
                                 else:
-                                    # Если указан никнейм, получаем числовой ID через API
                                     resolved = vk.utils.resolveScreenName(screen_name=raw_mention)
                                     if resolved and resolved['type'] == 'user':
                                         target_id = resolved['object_id']
                                 
-                                # Очищаем текст от самого упоминания
                                 clean_text = re.sub(r'\[.*?\]', '', text).strip()
                                 message_to_send = clean_text[10:].strip()
 
-                        # Если цель и текст найдены — отправляем в ЛС от твоего имени
                         if target_id and message_to_send:
-                            vk.messages.send(
-                                peer_id=target_id, 
-                                message=message_to_send, 
-                                random_id=random.randint(1, 1000000)
-                            )
-                            # Короткий отчет в чат, где была введена команда, чтобы ты знал, что дошло
-                            vk.messages.send(
-                                peer_id=peer_id, 
-                                message=f"✅ Отправлено в ЛС для id{target_id}", 
-                                random_id=random.randint(1, 1000000)
-                            )
-                    except Exception as e:
-                        print(f"Ошибка команды /отпрчелу: {e}")
+                            vk.messages.send(peer_id=target_id, message=message_to_send, random_id=random.randint(1, 1000000))
+                            vk.messages.send(peer_id=peer_id, message=f"✅ Отправлено в ЛС для id{target_id}", random_id=random.randint(1, 1000000))
+                    except: pass
                     continue
 
-                # --- ОСТАЛЬНЫЕ СТАНДАРТНЫЕ КОМАНДЫ ---
+                # --- ОСТАЛЬНЫЕ КОМАНДЫ ТРОЛЛИНГА ---
                 elif text.startswith("/негатив"):
                     try:
                         reply_msg = msg_info.get('reply_message')

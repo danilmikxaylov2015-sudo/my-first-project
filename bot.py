@@ -25,6 +25,7 @@ MY_USER_ID = 848213593
 target_reactions = {}  
 target_negatives = []  
 target_clones = []     
+user_nicknames = {}    # База для хранения кастомных никнеймов
 
 NEG_LINES = [
     "да пошел ты",
@@ -97,7 +98,6 @@ def main():
 
             if text.startswith("/") and (from_id == MY_USER_ID or peer_id == MY_USER_ID):
                 
-                # Исключение для удаления: тут сообщения физически стираются
                 if text.strip() in ["/удалить", "/дел"]:
                     try:
                         reply_msg = msg_info.get('reply_message')
@@ -116,15 +116,19 @@ def main():
                         vk.messages.edit(peer_id=peer_id, message_id=message_id, message="⏳ Получаю информацию...")
                         t_id = get_target_id(text, msg_info, vk)
                         if t_id and t_id > 0:
-                            user_data = vk.users.get(user_ids=t_id, fields="photo_max_orig,is_closed")[0]
+                            user_data = vk.users.get(user_ids=[t_id], fields="photo_max_orig,is_closed")[0]
                             first_name = user_data.get('first_name', 'Не указано')
                             last_name = user_data.get('last_name', 'Не указано')
                             is_closed = "🔒 Закрытый" if user_data.get('is_closed') else "🔓 Открытый"
                             photo = user_data.get('photo_max_orig', 'Нет фото')
                             
+                            # Проверяем наличие установленного никнейма
+                            nickname_str = user_nicknames.get(t_id, "Не установлен")
+                            
                             info_msg = (
                                 f"👤 Информация о пользователе:\n"
                                 f"• Имя: {first_name} {last_name}\n"
+                                f"• Никнейм: {nickname_str}\n"
                                 f"• ID: {t_id}\n"
                                 f"• Профиль: {is_closed}\n"
                                 f"• Ссылка: vk.com/id{t_id}\n"
@@ -134,7 +138,60 @@ def main():
                         else:
                             vk.messages.edit(peer_id=peer_id, message_id=message_id, message="⚠️ Ответь на сообщение цели или тегни через @!")
                     except Exception as e:
-                        try: vk.messages.edit(peer_id=peer_id, message_id=message_id, message=f"❌ Ошибка получения инфо: {e}")
+                        try: 
+                            err_text = str(e)
+                            if "[10]" in err_text:
+                                vk.messages.edit(peer_id=peer_id, message_id=message_id, message="❌ Сервера ВК сейчас перегружены (Ошибка 10). Попробуй еще раз через минуту!")
+                            else:
+                                vk.messages.edit(peer_id=peer_id, message_id=message_id, message=f"❌ Ошибка получения инфо: {e}")
+                        except: pass
+                    continue
+
+                # НОВАЯ КОМАНДА: /СНИК (Установка никнейма)
+                elif text.startswith("/сник"):
+                    try:
+                        t_id = get_target_id(text, msg_info, vk)
+                        if t_id:
+                            # Отрезаем саму команду и чистим текст от упоминаний ВК, чтобы остался только чистый ник
+                            raw_nick = text[5:].strip()
+                            clean_nick = re.sub(r'\[(id|club)\d+\|.*?\]', '', raw_nick).strip()
+                            
+                            if clean_nick:
+                                user_nicknames[t_id] = clean_nick
+                                vk.messages.edit(peer_id=peer_id, message_id=message_id, message=f"✅ Никнейм для id{t_id} изменен на: {clean_nick}")
+                            else:
+                                vk.messages.edit(peer_id=peer_id, message_id=message_id, message="⚠️ Напиши ник после команды! Пример: /сник Топчик")
+                        else:
+                            vk.messages.edit(peer_id=peer_id, message_id=message_id, message="⚠️ Ответь на сообщение цели или тегни её через @!")
+                    except Exception as e:
+                        try: vk.messages.edit(peer_id=peer_id, message_id=message_id, message=f"❌ Ошибка смены ника: {e}")
+                        except: pass
+                    continue
+
+                # НОВАЯ КОМАНДА: /ОНЛАЙН (Список друзей в сети)
+                elif text.startswith("/онлайн"):
+                    try:
+                        vk.messages.edit(peer_id=peer_id, message_id=message_id, message="⏳ Проверяю список друзей онлайн...")
+                        # Берем до 1000 друзей с полем online
+                        friends_data = vk.friends.get(fields="online", count=1000).get('items', [])
+                        online_friends = [f for f in friends_data if f.get('online') == 1]
+                        
+                        if online_friends:
+                            lines = []
+                            # Выводим максимум первые 30, чтобы лимит символов сообщения не ломался
+                            for i, f in enumerate(online_friends[:30], 1):
+                                lines.append(f"{i}. {f['first_name']} {f['last_name']} (vk.com/id{f['id']})")
+                            
+                            total_on = len(online_friends)
+                            res_text = f"🟢 Друзья онлайн (Всего: {total_on}):\n" + "\n".join(lines)
+                            if total_on > 30:
+                                res_text += f"\n\n...и ещё {total_on - 30} пользователей."
+                            
+                            vk.messages.edit(peer_id=peer_id, message_id=message_id, message=res_text)
+                        else:
+                            vk.messages.edit(peer_id=peer_id, message_id=message_id, message="⚪️ Сейчас никто из твоих друзей не в сети.")
+                    except Exception as e:
+                        try: vk.messages.edit(peer_id=peer_id, message_id=message_id, message=f"❌ Ошибка получения онлайн-списка: {e}")
                         except: pass
                     continue
 
@@ -245,19 +302,15 @@ def main():
                         except: pass
                     continue
 
-                # РЕДАКТИРОВАНИЕ КОМАНДЫ /ОТПРАВИТЬ
                 elif text.strip() == "/отправить":
-                    try:
-                        vk.messages.edit(peer_id=peer_id, message_id=message_id, message="ХОТИТЕ ПОЛУЧИТЬ МЕНЯ ПИШИ В ЛС")
+                    try: vk.messages.edit(peer_id=peer_id, message_id=message_id, message="ХОТИТЕ ПОЛУЧИТЬ МЕНЯ ПИШИ В ЛС")
                     except: pass
                     continue
 
-                # РЕДАКТИРОВАНИЕ КОМАНДЫ /ОТПРЧЕЛУ
                 elif text.startswith("/отпрчелу"):
                     try:
                         target_id = get_target_id(text, msg_info, vk)
                         message_to_send = ""
-                        
                         reply_msg = msg_info.get('reply_message')
                         if reply_msg:
                             message_to_send = text[10:].strip()
@@ -271,7 +324,6 @@ def main():
                     except: pass
                     continue
 
-                # РЕДАКТИРОВАНИЕ МОДЕР-КОМАНД (НЕГАТИВ / КЛОН)
                 elif text.startswith("/негатив"):
                     try:
                         reply_msg = msg_info.get('reply_message')
@@ -316,7 +368,6 @@ def main():
                     except: pass
                     continue
 
-                # РЕДАКТИРОВАНИЕ КОМАНДЫ /СПАМ
                 elif text.startswith("/спам"):
                     try:
                         parts = text.split(" ")
@@ -335,7 +386,6 @@ def main():
                     except: pass
                     continue
 
-                # РЕДАКТИРОВАНИЕ РЕАКЦИЙ
                 elif text.startswith("/реакция"):
                     try:
                         reply_msg = msg_info.get('reply_message')

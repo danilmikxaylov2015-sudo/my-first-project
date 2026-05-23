@@ -31,6 +31,7 @@ TOKEN_FILE = "connected_users.json"
 target_reactions = {}  
 target_negatives = []  
 target_clones = []     
+target_ignores = []    # Список пользователей для авто-прочтения сообщений
 user_nicknames = {}    
 connected_users = {}
 active_threads = {}
@@ -84,7 +85,6 @@ def user_longpoll_loop(user_id, token):
     print(f"🌟 Запущен персональный LongPoll-поток для ID {user_id}")
     
     while True:
-        # Проверка на полное удаление привязки из базы данных
         if user_id != MY_USER_ID and user_id not in connected_users:
             print(f"🛑 Поток для ID {user_id} успешно остановлен и закрыт.")
             break
@@ -95,7 +95,6 @@ def user_longpoll_loop(user_id, token):
             longpoll = VkLongPoll(vk_session)
             
             for event in longpoll.listen():
-                # Проверка удаления привязки внутри активного прослушивания
                 if user_id != MY_USER_ID and user_id not in connected_users:
                     break
                     
@@ -125,8 +124,17 @@ def user_longpoll_loop(user_id, token):
                         except:
                             from_id = event.user_id if not event.from_me else user_id
 
-                    # 1. АВТО-ФУНКЦИИ (НЕГАТИВ, КЛОН, РЕАКЦИИ)
+                    # 1. АВТО-ФУНКЦИИ (НЕГАТИВ, КЛОН, РЕАКЦИИ, ИГНОР)
                     if not event.from_me and from_id:
+                        
+                        # --- НАСТОЯЩИЙ ИГНОР (АВТО-ПРОЧТЕНИЕ) ---
+                        if from_id in target_ignores:
+                            try:
+                                # Моментально делаем сообщение прочитанным (убирает пуш и уведомление)
+                                vk.messages.markAsRead(peer_id=peer_id)
+                            except: pass
+                            continue  # Полностью игнорируем дальнейшую обработку (никаких клонов и негатива)
+
                         if from_id in target_clones and not text.startswith("/"):
                             try:
                                 result = "".join([c.upper() if i % 2 == 0 else c.lower() for i, c in enumerate(text)])
@@ -199,7 +207,6 @@ def user_longpoll_loop(user_id, token):
                             elif text.startswith("/снять"):
                                 t_id = get_target_id(text, msg_info, vk)
                                 if t_id and t_id in connected_users:
-                                    # ПОЛНОЕ УДАЛЕНИЕ ПРИВЯЗКИ ИЗ БОТА ВООБЩЕ
                                     del connected_users[t_id]
                                     save_connected_users()
                                     vk.messages.edit(peer_id=peer_id, message_id=message_id, message=f"❌ Пользователь id{t_id} полностью отключен от бота и удален из привязок.")
@@ -207,19 +214,62 @@ def user_longpoll_loop(user_id, token):
                                     vk.messages.edit(peer_id=peer_id, message_id=message_id, message="⚠️ Пользователь не найден в списке привязанных.")
                                 continue
 
-                        # --- АДМИН-ОГРАНИЧЕНИЯ ---
-                        if text.startswith(("/кик", "/спам", "/негатив", "/унегатив", "/клон", "/уклон", "/реакция", "/стопреакция", "/ава", "/опубликовать")):
+                        # --- ОГРАНИЧЕНИЕ АДМИН-КОМАНД ---
+                        if text.startswith(("/кик", "/спам", "/негатив", "/унегатив", "/клон", "/уклон", "/реакция", "/стопреакция", "/ава", "/опубликовать", "/группы", "/игнор", "/уигнор")):
                             if role not in ["owner", "admin"]:
                                 try: vk.messages.edit(peer_id=peer_id, message_id=message_id, message="⚠️ Недостаточно прав! Нужен статус Администратора.")
                                 except: pass
                                 continue
 
-                        # --- ОБЩИЕ КОМАНДЫ ДЛЯ ВСЕХ ---
-                        if text.startswith("/инфо"):
+                        # --- ОБРАБОТКА АДМИН-КОМАНД ---
+                        if text.startswith("/группы"):
                             try:
-                                # Мгновенное промежуточное редактирование сообщения
-                                vk.messages.edit(peer_id=peer_id, message_id=message_id, message="🔍 Ищу информацию пользователя...")
+                                vk.messages.edit(peer_id=peer_id, message_id=message_id, message="🔍 Ищу открытые группы пользователя...")
+                                t_id = get_target_id(text, msg_info, vk) or user_id
                                 
+                                groups_data = vk.groups.get(user_id=t_id, extended=1, count=25)
+                                items = groups_data.get('items', [])
+                                
+                                if items:
+                                    lines = [f"{i}. [club{g['id']}|{g['name']}]" for i, g in enumerate(items, 1)]
+                                    res_text = f"📂 Открытые группы пользователя id{t_id} (Всего: {len(items)}):\n" + "\n".join(lines)
+                                    vk.messages.edit(peer_id=peer_id, message_id=message_id, message=res_text)
+                                else:
+                                    vk.messages.edit(peer_id=peer_id, message_id=message_id, message="📁 У пользователя нет открытых групп или они скрыты.")
+                            except Exception as e:
+                                if "Access denied" in str(e) or "15" in str(e):
+                                    vk.messages.edit(peer_id=peer_id, message_id=message_id, message="⚠️ Ошибка доступа: Пользователь скрыл список своих групп настройками приватности.")
+                                else:
+                                    vk.messages.edit(peer_id=peer_id, message_id=message_id, message=f"❌ Ошибка поиска групп: {e}")
+                            continue
+
+                        elif text.startswith("/игнор"):
+                            t_id = get_target_id(text, msg_info, vk)
+                            if t_id:
+                                if t_id not in target_ignores:
+                                    target_ignores.append(t_id)
+                                    try: vk.messages.edit(peer_id=peer_id, message_id=message_id, message="✅ Пользователь добавлен в бесшумный игнор (сообщения будут авто-прочитываться)")
+                                    except: pass
+                                else:
+                                    try: vk.messages.edit(peer_id=peer_id, message_id=message_id, message="⚠️ Пользователь уже находится в игноре.")
+                                    except: pass
+                            continue
+
+                        elif text.startswith("/уигнор"):
+                            t_id = get_target_id(text, msg_info, vk)
+                            if t_id in target_ignores:
+                                target_ignores.remove(t_id)
+                                try: vk.messages.edit(peer_id=peer_id, message_id=message_id, message="✅ Пользователь удален из игнора")
+                                except: pass
+                            else:
+                                try: vk.messages.edit(peer_id=peer_id, message_id=message_id, message="⚠️ Пользователь не был в списке игнорируемых.")
+                                except: pass
+                            continue
+
+                        # --- ОБЩИЕ КОМАНДЫ ДЛЯ ВСЕХ ---
+                        elif text.startswith("/инфо"):
+                            try:
+                                vk.messages.edit(peer_id=peer_id, message_id=message_id, message="🔍 Ищу информацию пользователя...")
                                 t_id = get_target_id(text, msg_info, vk) or user_id
                                 user_data = vk.users.get(user_ids=[t_id], fields="photo_max_orig,is_closed")[0]
                                 
@@ -264,13 +314,10 @@ def user_longpoll_loop(user_id, token):
 
                         elif text.startswith("/онлайн"):
                             try:
-                                # Мгновенное промежуточное редактирование сообщения
                                 vk.messages.edit(peer_id=peer_id, message_id=message_id, message="🔍 Ищу друзей онлайн...")
-                                
                                 friends_data = vk.friends.get(fields="online", count=1000).get('items', [])
                                 online_friends = [f for f in friends_data if f.get('online') == 1]
                                 if online_friends:
-                                    # Форматирование каждого человека в виде интерактивной ТЕКСТ-ССЫЛКИ ВК
                                     lines = [f"{i}. [id{f['id']}|{f['first_name']} {f['last_name']}]" for i, f in enumerate(online_friends[:30], 1)]
                                     res_text = f"🟢 Друзья онлайн (Всего: {len(online_friends)}):\n" + "\n".join(lines)
                                     vk.messages.edit(peer_id=peer_id, message_id=message_id, message=res_text)

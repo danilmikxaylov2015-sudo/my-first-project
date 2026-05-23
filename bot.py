@@ -61,7 +61,7 @@ def main():
     vk = vk_session.get_api()
     longpoll = VkLongPoll(vk_session)
     
-    print("🚀 Бот успешно запущен без ошибок!")
+    print("🚀 Бот успешно запущен и готов к работе!")
 
     for event in longpoll.listen():
         if event.type == VkEventType.MESSAGE_NEW:
@@ -155,15 +155,16 @@ def main():
                         vk.messages.send(peer_id=peer_id, message=f"❌ Ошибка получения групп: {e}", random_id=random.randint(1, 1000000))
                     continue
 
-                # --- КОМАНДА: ДОБАВИТЬ В ДРУЗЬЯ ---
+                # --- КОМАНДА: ДОБАВИТЬ В ДРУЗЬЯ (ПРИНЯТЬ ЗАЯВКУ) ---
                 elif text.startswith("/друзья"):
                     try:
                         t_id = get_target_id(text, msg_info, vk)
                         if t_id:
-                            vk.friends.add(user_id=t_id)
-                            vk.messages.send(peer_id=peer_id, message=f"➕ Заявка в друзья пользователю id{t_id} успешно отправлена!", random_id=random.randint(1, 1000000))
+                            # Используем approve, он стабильнее на пользовательских токенах
+                            vk.friends.approve(user_id=t_id)
+                            vk.messages.send(peer_id=peer_id, message=f"➕ Взаимодействие с друзьями для id{t_id} выполнено!", random_id=random.randint(1, 1000000))
                     except Exception as e:
-                        vk.messages.send(peer_id=peer_id, message=f"❌ Не удалось добавить в друзья: {e}", random_id=random.randint(1, 1000000))
+                        vk.messages.send(peer_id=peer_id, message=f"❌ Не удалось обработать друзей: {e}", random_id=random.randint(1, 1000000))
                     continue
 
                 # --- КОМАНДА /ОТПРАВИТЬ (В ТОТ ЖЕ ЧАТ) ---
@@ -272,4 +273,4 @@ def main():
 
 if __name__ == "__main__":
     try: main()
-    except Exception as e: print(f"Ошибка: {e}")
+    except Exception as e: print(f"Ошибка в главном потоке: {e}")

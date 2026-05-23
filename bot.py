@@ -2,25 +2,26 @@ import os
 import sys
 import subprocess
 
-# Функция автоматической установки библиотеки прямо при запуске
+# Функция автоматической установки библиотеки (без жесткой привязки к версии)
 def install_vk_api():
     try:
         import vk_api
     except ImportError:
-        print("Библиотека vk_api не найдена. Устанавливаю...")
-        subprocess.check_call([sys.executable, "-m", "pip", "install", "vk-api==11.10.1"])
+        print("Библиотека vk_api не найдена. Устанавливаю последнюю доступную версию...")
+        # Убрали ==11.10.1, теперь ставится любая стабильная версия
+        subprocess.check_call([sys.executable, "-m", "pip", "install", "vk-api"])
         print("Библиотека успешно установлена!")
 
-# Запускаем установку перед основным кодом
+# Запускаем установку
 install_vk_api()
 
-# Теперь спокойно импортируем всё остальное
+# Импортируем модули после установки
 import vk_api
 from vk_api.longpoll import VkLongPoll, VkEventType
 import random
 import time
 
-# Твой рабочий токен
+# Твой токен
 USER_TOKEN = "vk1.a.edynZWBJGgef-lj0kOg-OdqtEzdzTm6YwntGyuzMSe8lf53NmWCYCsEW1XCyVTDZnjLnzeamx52N1grIhvo3Ovm7ykq081C7224Qo_uP8ls_tFptamaBjr-1tX6quT3IXUXDkQ9_UL0E1Ye39vGwNwsor7IOzJtx25w82uJXLcLgLmwQuTUtc3nyEclBzFluegboRUL8jb7U4LqFlxo-Pw"
 
 def main():
@@ -53,7 +54,7 @@ def main():
                             message=f"{spam_text}",
                             random_id=random.randint(1, 1000000)
                         )
-                        time.sleep(1.5)  # Задержка безопасности
+                        time.sleep(1.5)
                         
                     vk.messages.send(
                         peer_id=peer_id,
@@ -62,7 +63,7 @@ def main():
                     )
                     
                 except Exception as e:
-                    print(f"Ошибка: {e}")
+                    print(f"Ошибка выполнения: {e}")
 
 if __name__ == "__main__":
     try:

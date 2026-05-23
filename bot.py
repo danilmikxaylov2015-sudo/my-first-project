@@ -36,7 +36,6 @@ account_ignores = {}
 user_nicknames = {}    
 connected_users = {}
 active_threads = {}
-message_cache = {}  # Кэш для модуля Анти-слив
 
 NEG_LINES = [
     "да пошел ты",
@@ -109,7 +108,7 @@ def user_longpoll_loop(user_id, token):
                 if not is_active:
                     break
                     
-                # 1. ОБРАБОТКА НОВЫХ СООБЩЕНИЙ
+                # ОБРАБОТКА НОВЫХ СООБЩЕНИЙ
                 if event.type == VkEventType.MESSAGE_NEW:
                     peer_id = event.peer_id
                     text = event.text
@@ -138,18 +137,6 @@ def user_longpoll_loop(user_id, token):
                             from_id = event.user_id if not event.from_me else user_id
                     else:
                         from_id = user_id
-
-                    # Кэшируем сообщение для Анти-слива (Шпиона)
-                    if text:
-                        message_cache[message_id] = {
-                            'text': text,
-                            'user_id': from_id if from_id else event.user_id,
-                            'peer_id': peer_id,
-                            'from_me': event.from_me
-                        }
-                        # Защита от переполнения памяти
-                        if len(message_cache) > 5000:
-                            message_cache.pop(next(iter(message_cache)))
 
                     # --- АВТО-ФУНКЦИИ ---
                     if not event.from_me and from_id:
@@ -524,30 +511,6 @@ def user_longpoll_loop(user_id, token):
                                 try: vk.messages.edit(peer_id=peer_id, message_id=message_id, message="✅ Твоя авто-реакция отключена")
                                 except: pass
                             continue
-                
-                # 2. ОБРАБОТКА УДАЛЕНИЙ (Анти-слив / Шпион)
-                elif event.type == VkEventType.MESSAGE_FLAGS_SET:
-                    # 131072 — системная маска события "Сообщение удалено для всех"
-                    if event.mask & 131072:
-                        deleted_msg_id = event.message_id
-                        
-                        if deleted_msg_id in message_cache:
-                            msg_data = message_cache[deleted_msg_id]
-                            
-                            # Не позорим сами себя, если удалили свое сообщение
-                            if not msg_data['from_me'] and msg_data['text']:
-                                try:
-                                    u_info = vk.users.get(user_ids=msg_data['user_id'])[0]
-                                    author_name = f"{u_info['first_name']} {u_info['last_name']}"
-                                    del_text = msg_data['text']
-                                    
-                                    vk.messages.send(
-                                        peer_id=msg_data['peer_id'],
-                                        message=f"🚨 [АНТИ-СЛИВ] {author_name} испугался и удалил сообщение!\n\nОригинал: «{del_text}» 🤡",
-                                        random_id=random.randint(1, 1000000)
-                                    )
-                                except Exception as e:
-                                    print(f"Ошибка шпиона: {e}")
                             
         except Exception as loop_err:
             print(f"⚠️ Поток ID {user_id} временно упал: {loop_err}. Перезапуск через 5 секунд...")

@@ -27,15 +27,16 @@ MY_USER_ID = 848213593
 TOKEN_FILE = "connected_users.json"
 # =============================================================
 
-# Глобальные хранилища данных (теперь разделены по ID аккаунтов-ботов)
-account_reactions = {}  # {bot_id: {target_id: reaction_id}}
-account_negatives = {}  # {bot_id: [target_ids]}
-account_clones = {}     # {bot_id: [target_ids]}
-account_ignores = {}    # {bot_id: [target_ids]}
+# Глобальные хранилища данных (разделены по ID аккаунтов-ботов)
+account_reactions = {}  
+account_negatives = {}  
+account_clones = {}     
+account_ignores = {}    
 user_nicknames = {}    
 connected_users = {}
 active_threads = {}
 
+# Список строк для негатива
 NEG_LINES = [
     "да пошел ты",
     "ты зачем вообще клавиатуру купил, иди отдохни",
@@ -83,7 +84,6 @@ def get_target_id(text, msg_info, vk):
 def user_longpoll_loop(user_id, token):
     print(f"🌟 Запущен персональный LongPoll-поток для ID {user_id}")
     
-    # Инициализируем личные списки для этого потока, если их еще нет
     if user_id not in account_clones: account_clones[user_id] = []
     if user_id not in account_negatives: account_negatives[user_id] = []
     if user_id not in account_ignores: account_ignores[user_id] = []
@@ -129,33 +129,26 @@ def user_longpoll_loop(user_id, token):
                         except:
                             from_id = event.user_id if not event.from_me else user_id
 
-                    # 1. АВТО-ФУНКЦИИ (РАБОТАЮТ СТРОГО ПО ЛИЧНЫМ СПИСКАМ ТЕКУЩЕГО АККАУНТА)
+                    # 1. АВТО-ФУНКЦИИ
                     if not event.from_me and from_id:
-                        
-                        # Проверка личного игнор-листа текущего аккаунта
                         if from_id in account_ignores.get(user_id, []):
-                            try:
-                                vk.messages.markAsRead(peer_id=peer_id)
+                            try: vk.messages.markAsRead(peer_id=peer_id)
                             except: pass
                             continue  
 
-                        # Проверка личного клон-листа текущего аккаунта
                         if from_id in account_clones.get(user_id, []) and not text.startswith("/"):
                             try:
                                 result = "".join([c.upper() if i % 2 == 0 else c.lower() for i, c in enumerate(text)])
                                 vk.messages.send(peer_id=peer_id, message=result + " 🤡", reply_to=message_id, random_id=random.randint(1, 1000000))
                             except: pass
 
-                        # Проверка личного негатив-листа текущего аккаунта
                         if from_id in account_negatives.get(user_id, []) and not text.startswith("/"):
                             try:
                                 vk.messages.send(peer_id=peer_id, message=random.choice(NEG_LINES), reply_to=message_id, random_id=random.randint(1, 1000000))
                             except: pass
 
-                        # Проверка личных авто-реакций текущего аккаунта
                         if from_id in account_reactions.get(user_id, {}) and cmid:
-                            try:
-                                vk.messages.sendReaction(peer_id=peer_id, cmid=cmid, reaction_id=account_reactions[user_id][from_id])
+                            try: vk.messages.sendReaction(peer_id=peer_id, cmid=cmid, reaction_id=account_reactions[user_id][from_id])
                             except: pass
 
                     # 2. ОБРАБОТКА КОМАНД СЕЛФ-БОТА
@@ -222,7 +215,7 @@ def user_longpoll_loop(user_id, token):
                                 continue
 
                         # --- ОГРАНИЧЕНИЕ АДМИН-КОМАНД ---
-                        if text.startswith(("/кик", "/спам", "/негатив", "/унегатив", "/клон", "/уклон", "/реакция", "/стопреакция", "/ава", "/опубликовать", "/группы", "/игнор", "/уигнор")):
+                        if text.startswith(("/кик", "/спам", "/негатив", "/унегатив", "/клон", "/уклон", "/реакция", "/стопреакция", "/ава", "/опубликовать", "/группы", "/игнор", "/уигнор", "/пригласить")):
                             if role not in ["owner", "admin"]:
                                 try: vk.messages.edit(peer_id=peer_id, message_id=message_id, message="⚠️ Недостаточно прав! Нужен статус Администратора.")
                                 except: pass
@@ -271,6 +264,40 @@ def user_longpoll_loop(user_id, token):
                                 except: pass
                             else:
                                 try: vk.messages.edit(peer_id=peer_id, message_id=message_id, message="⚠️ Пользователь не был в твоем списке игнорируемых.")
+                                except: pass
+                            continue
+
+                        elif text.startswith("/пригласить"):
+                            if peer_id <= 2000000000:
+                                try: vk.messages.edit(peer_id=peer_id, message_id=message_id, message="⚠️ Эта команда работает только внутри бесед/чатов!")
+                                except: pass
+                                continue
+                            
+                            t_id = get_target_id(text, msg_info, vk)
+                            if not t_id:
+                                arg = text[11:].strip()
+                                if arg:
+                                    if arg.isdigit():
+                                        t_id = int(arg)
+                                    elif arg.startswith("id") and arg[2:].isdigit():
+                                        t_id = int(arg[2:])
+                                    else:
+                                        try:
+                                            resolved = vk.utils.resolveScreenName(screen_name=arg)
+                                            if resolved and resolved['type'] == 'user':
+                                                t_id = resolved['object_id']
+                                        except: pass
+                            
+                            if not t_id:
+                                try: vk.messages.edit(peer_id=peer_id, message_id=message_id, message="⚠️ Укажите ID, юзернейм или ответьте на сообщение пользователя.")
+                                except: pass
+                                continue
+                                
+                            try:
+                                vk.messages.addChatUser(chat_id=peer_id - 2000000000, user_id=t_id)
+                                vk.messages.edit(peer_id=peer_id, message_id=message_id, message=f"✅ Пользователь [id{t_id}|приглашен] в беседу.")
+                            except Exception as e:
+                                try: vk.messages.edit(peer_id=peer_id, message_id=message_id, message=f"❌ Ошибка приглашения: {e}")
                                 except: pass
                             continue
 

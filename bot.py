@@ -1,97 +1,68 @@
-import sys
-import subprocess
-import time
+import vk_api
+from vk_api.longpoll import VkLongPoll, VkEventType
 import random
-import threading
+import time
 
-try:
-    import vk_api
-    from vk_api.bot_longpoll import VkBotLongPoll, VkBotEventType
-except ImportError:
-    print("vk_api не найден. Устанавливаю...")
-    subprocess.check_call([sys.executable, "-m", "pip", "install", "vk_api"])
+# Твой успешно полученный токен пользователя
+USER_TOKEN = "vk1.a.edynZWBJGgef-lj0kOg-OdqtEzdzTm6YwntGyuzMSe8lf53NmWCYCsEW1XCyVTDZnjLnzeamx52N1grIhvo3Ovm7ykq081C7224Qo_uP8ls_tFptamaBjr-1tX6quT3IXUXDkQ9_UL0E1Ye39vGwNwsor7IOzJtx25w82uJXLcLgLmwQuTUtc3nyEclBzFluegboRUL8jb7U4LqFlxo-Pw"
 
-    import vk_api
-    from vk_api.bot_longpoll import VkBotLongPoll, VkBotEventType
+def main():
+    # Авторизация в ВК от имени твоего аккаунта
+    vk_session = vk_api.VkApi(token=USER_TOKEN)
+    vk = vk_session.get_api()
+    
+    # Подключение к серверу обновлений (LongPoll)
+    longpoll = VkLongPoll(vk_session)
+    
+    print("🚀 Селф-бот успешно запущен и работает прямо с твоего аккаунта!")
+    print("Доступная команда в любом чате/ЛС: !спам [текст] [количество]")
 
+    for event in longpoll.listen():
+        # Ловим только новые входящие или исходящие текстовые сообщения
+        if event.type == VkEventType.MESSAGE_NEW:
+            
+            peer_id = event.peer_id
+            text = event.text
+            
+            # Проверяем команду активации спама
+            if text.startswith("!спам"):
+                try:
+                    # Разбираем сообщение по пробелам
+                    parts = text.split(" ")
+                    
+                    # Извлекаем количество (последний элемент) и текст спама
+                    count = int(parts[-1])
+                    spam_text = " ".join(parts[1:-1])
+                    
+                    # Небольшое уведомление о старте атаки
+                    vk.messages.send(
+                        peer_id=peer_id,
+                        message=f"🔥 Запускаю отправку сообщений ({count} раз)!",
+                        random_id=random.randint(1, 1000000)
+                    )
+                    
+                    # Цикл отправки
+                    for i in range(count):
+                        vk.messages.send(
+                            peer_id=peer_id,
+                            message=f"{spam_text}",
+                            random_id=random.randint(1, 1000000)
+                        )
+                        # Задержка 1.5 секунды, чтобы ВК не заблокировал аккаунт за флуд
+                        time.sleep(1.5)
+                        
+                    # Уведомление об успешном окончании
+                    vk.messages.send(
+                        peer_id=peer_id,
+                        message="✅ Всё отправлено!",
+                        random_id=random.randint(1, 1000000)
+                    )
+                    
+                except Exception as e:
+                    print(f"Ошибка при выполнении команды: {e}")
 
-TOKEN = "vk1.a.jmhGtKNRy-okO7WM6HyGJofKiJMaUnBDyB3kEqxdKypWpcnJaEB7KBJixSmIMLc7YLBJHu6wKY2sElm6VlK59GWdnir2DJQl5D9ohPLQ_8USyg-_gpviWLw31YaUIcx51Y84dSXBPjUpwIULup3JGkiHECtNOGSqlxX4q3IvWgeGEwzaXefqwmTa9aFx2-g9b5dmx07Wx-HH3-Tu_2HDag"
-
-# Владельцы бота
-OWNER_IDS = [
-    848213593,
-    750694024
-]
-
-PR_TEXT = "пишите в лс пж. [danil_mikxaylov|Данил Михайлов]"
-
-DELAY = 60
-
-vk_session = vk_api.VkApi(token=TOKEN)
-vk = vk_session.get_api()
-
-active_chats = {}
-
-
-def get_group_id():
+if __name__ == "__main__":
     try:
-        info = vk.groups.getById()
-        return info[0]["id"]
+        main()
     except Exception as e:
-        print("Ошибка получения ID сообщества:", e)
-        sys.exit()
-
-
-GROUP_ID = get_group_id()
-longpoll = VkBotLongPoll(vk_session, GROUP_ID)
-
-
-def send_message(peer_id, text):
-    vk.messages.send(
-        peer_id=peer_id,
-        message=text,
-        random_id=random.randint(1, 999999999)
-    )
-
-
-def pr_loop(peer_id):
-    while active_chats.get(peer_id, False):
-        try:
-            send_message(peer_id, PR_TEXT)
-            print(f"Пиар отправлен в чат {peer_id}")
-        except Exception as e:
-            print("Ошибка отправки:", e)
-
-        time.sleep(DELAY)
-
-
-print("VK пиар-бот запущен.")
-print("Команды владельцев: /start и /stop")
-
-
-for event in longpoll.listen():
-    if event.type == VkBotEventType.MESSAGE_NEW:
-        msg = event.object.message
-
-        text = msg.get("text", "").lower().strip()
-        peer_id = msg.get("peer_id")
-        from_id = msg.get("from_id")
-
-        if text in ["/start", "/stop"] and from_id not in OWNER_IDS:
-            send_message(peer_id, "У тебя нет доступа к этой команде.")
-            continue
-
-        if text == "/start":
-            if active_chats.get(peer_id):
-                send_message(peer_id, "Пиар уже запущен.")
-            else:
-                active_chats[peer_id] = True
-                threading.Thread(target=pr_loop, args=(peer_id,), daemon=True).start()
-                send_message(peer_id, "Пиар запущен. Буду писать каждую минуту.")
-
-        elif text == "/stop":
-            if active_chats.get(peer_id):
-                active_chats[peer_id] = False
-                send_message(peer_id, "Пиар остановлен.")
-            else:
-                send_message(peer_id, "Пиар и так не запущен.")
+        print(f"Ошибка работы бота: {e}")

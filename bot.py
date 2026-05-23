@@ -27,11 +27,11 @@ MY_USER_ID = 848213593
 TOKEN_FILE = "connected_users.json"
 # =============================================================
 
-# Глобальные хранилища данных
-target_reactions = {}  
-target_negatives = []  
-target_clones = []     
-target_ignores = []    
+# Глобальные хранилища данных (теперь разделены по ID аккаунтов-ботов)
+account_reactions = {}  # {bot_id: {target_id: reaction_id}}
+account_negatives = {}  # {bot_id: [target_ids]}
+account_clones = {}     # {bot_id: [target_ids]}
+account_ignores = {}    # {bot_id: [target_ids]}
 user_nicknames = {}    
 connected_users = {}
 active_threads = {}
@@ -83,6 +83,12 @@ def get_target_id(text, msg_info, vk):
 def user_longpoll_loop(user_id, token):
     print(f"🌟 Запущен персональный LongPoll-поток для ID {user_id}")
     
+    # Инициализируем личные списки для этого потока, если их еще нет
+    if user_id not in account_clones: account_clones[user_id] = []
+    if user_id not in account_negatives: account_negatives[user_id] = []
+    if user_id not in account_ignores: account_ignores[user_id] = []
+    if user_id not in account_reactions: account_reactions[user_id] = {}
+
     while True:
         if user_id != MY_USER_ID and user_id not in connected_users:
             print(f"🛑 Поток для ID {user_id} успешно остановлен и закрыт.")
@@ -123,28 +129,33 @@ def user_longpoll_loop(user_id, token):
                         except:
                             from_id = event.user_id if not event.from_me else user_id
 
-                    # 1. АВТО-ФУНКЦИИ (НЕГАТИВ, КЛОН, РЕАКЦИИ, ИГНОР)
+                    # 1. АВТО-ФУНКЦИИ (РАБОТАЮТ СТРОГО ПО ЛИЧНЫМ СПИСКАМ ТЕКУЩЕГО АККАУНТА)
                     if not event.from_me and from_id:
-                        if from_id in target_ignores:
+                        
+                        # Проверка личного игнор-листа текущего аккаунта
+                        if from_id in account_ignores.get(user_id, []):
                             try:
                                 vk.messages.markAsRead(peer_id=peer_id)
                             except: pass
                             continue  
 
-                        if from_id in target_clones and not text.startswith("/"):
+                        # Проверка личного клон-листа текущего аккаунта
+                        if from_id in account_clones.get(user_id, []) and not text.startswith("/"):
                             try:
                                 result = "".join([c.upper() if i % 2 == 0 else c.lower() for i, c in enumerate(text)])
                                 vk.messages.send(peer_id=peer_id, message=result + " 🤡", reply_to=message_id, random_id=random.randint(1, 1000000))
                             except: pass
 
-                        if from_id in target_negatives and not text.startswith("/"):
+                        # Проверка личного негатив-листа текущего аккаунта
+                        if from_id in account_negatives.get(user_id, []) and not text.startswith("/"):
                             try:
                                 vk.messages.send(peer_id=peer_id, message=random.choice(NEG_LINES), reply_to=message_id, random_id=random.randint(1, 1000000))
                             except: pass
 
-                        if from_id in target_reactions and cmid:
+                        # Проверка личных авто-реакций текущего аккаунта
+                        if from_id in account_reactions.get(user_id, {}) and cmid:
                             try:
-                                vk.messages.sendReaction(peer_id=peer_id, cmid=cmid, reaction_id=target_reactions[from_id])
+                                vk.messages.sendReaction(peer_id=peer_id, cmid=cmid, reaction_id=account_reactions[user_id][from_id])
                             except: pass
 
                     # 2. ОБРАБОТКА КОМАНД СЕЛФ-БОТА
@@ -242,23 +253,24 @@ def user_longpoll_loop(user_id, token):
                         elif text.startswith("/игнор"):
                             t_id = get_target_id(text, msg_info, vk)
                             if t_id:
-                                if t_id not in target_ignores:
-                                    target_ignores.append(t_id)
-                                    try: vk.messages.edit(peer_id=peer_id, message_id=message_id, message="✅ Пользователь добавлен в бесшумный игнор (сообщения будут авто-прочитываться)")
+                                if user_id not in account_ignores: account_ignores[user_id] = []
+                                if t_id not in account_ignores[user_id]:
+                                    account_ignores[user_id].append(t_id)
+                                    try: vk.messages.edit(peer_id=peer_id, message_id=message_id, message="✅ Пользователь добавлен в твой личный бесшумный игнор")
                                     except: pass
                                 else:
-                                    try: vk.messages.edit(peer_id=peer_id, message_id=message_id, message="⚠️ Пользователь уже находится в игноре.")
+                                    try: vk.messages.edit(peer_id=peer_id, message_id=message_id, message="⚠️ Пользователь уже в твоем игноре.")
                                     except: pass
                             continue
 
                         elif text.startswith("/уигнор"):
                             t_id = get_target_id(text, msg_info, vk)
-                            if t_id in target_ignores:
-                                target_ignores.remove(t_id)
-                                try: vk.messages.edit(peer_id=peer_id, message_id=message_id, message="✅ Пользователь удален из игнора")
+                            if user_id in account_ignores and t_id in account_ignores[user_id]:
+                                account_ignores[user_id].remove(t_id)
+                                try: vk.messages.edit(peer_id=peer_id, message_id=message_id, message="✅ Пользователь удален из твоего игнора")
                                 except: pass
                             else:
-                                try: vk.messages.edit(peer_id=peer_id, message_id=message_id, message="⚠️ Пользователь не был в списке игнорируемых.")
+                                try: vk.messages.edit(peer_id=peer_id, message_id=message_id, message="⚠️ Пользователь не был в твоем списке игнорируемых.")
                                 except: pass
                             continue
 
@@ -273,7 +285,6 @@ def user_longpoll_loop(user_id, token):
                                 elif t_id in connected_users: role_display = "🛠️ Админ" if connected_users[t_id]["role"] == "admin" else "👤 Пользователь"
                                 else: role_display = "❌ Не подключен"
                                 
-                                # Получаем кастомный никнейм из базы данных /сник
                                 nick_display = user_nicknames.get(t_id, "Не установлен")
                                 
                                 info_msg = (
@@ -395,33 +406,37 @@ def user_longpoll_loop(user_id, token):
 
                         elif text.startswith("/негатив"):
                             t_id = get_target_id(text, msg_info, vk)
-                            if t_id and t_id not in target_negatives:
-                                target_negatives.append(t_id)
-                                try: vk.messages.edit(peer_id=peer_id, message_id=message_id, message="пользователь добавлен в негатив")
-                                except: pass
+                            if t_id:
+                                if user_id not in account_negatives: account_negatives[user_id] = []
+                                if t_id not in account_negatives[user_id]:
+                                    account_negatives[user_id].append(t_id)
+                                    try: vk.messages.edit(peer_id=peer_id, message_id=message_id, message="✅ Пользователь добавлен в твой личный негатив")
+                                    except: pass
                             continue
 
                         elif text.startswith("/унегатив"):
                             t_id = get_target_id(text, msg_info, vk)
-                            if t_id in target_negatives:
-                                target_negatives.remove(t_id)
-                                try: vk.messages.edit(peer_id=peer_id, message_id=message_id, message="пользователь удален из негатива")
+                            if user_id in account_negatives and t_id in account_negatives[user_id]:
+                                account_negatives[user_id].remove(t_id)
+                                try: vk.messages.edit(peer_id=peer_id, message_id=message_id, message="✅ Пользователь удален из твоего негатива")
                                 except: pass
                             continue
 
                         elif text.startswith("/клон"):
                             t_id = get_target_id(text, msg_info, vk)
-                            if t_id and t_id not in target_clones:
-                                target_clones.append(t_id)
-                                try: vk.messages.edit(peer_id=peer_id, message_id=message_id, message="пользователь добавлен в клоны")
-                                except: pass
+                            if t_id:
+                                if user_id not in account_clones: account_clones[user_id] = []
+                                if t_id not in account_clones[user_id]:
+                                    account_clones[user_id].append(t_id)
+                                    try: vk.messages.edit(peer_id=peer_id, message_id=message_id, message="✅ Пользователь добавлен в твои клоны")
+                                    except: pass
                             continue
 
                         elif text.startswith("/уклон"):
                             t_id = get_target_id(text, msg_info, vk)
-                            if t_id in target_clones:
-                                target_clones.remove(t_id)
-                                try: vk.messages.edit(peer_id=peer_id, message_id=message_id, message="пользователь удален из клонов")
+                            if user_id in account_clones and t_id in account_clones[user_id]:
+                                account_clones[user_id].remove(t_id)
+                                try: vk.messages.edit(peer_id=peer_id, message_id=message_id, message="✅ Пользователь удален из твоих клонов")
                                 except: pass
                             continue
 
@@ -442,16 +457,17 @@ def user_longpoll_loop(user_id, token):
                             if t_id:
                                 try: r_id = int(text.split(" ")[1])
                                 except: r_id = 1
-                                target_reactions[t_id] = r_id
-                                try: vk.messages.edit(peer_id=peer_id, message_id=message_id, message=f"✅ Авто-реакция {r_id} задана!")
+                                if user_id not in account_reactions: account_reactions[user_id] = {}
+                                account_reactions[user_id][t_id] = r_id
+                                try: vk.messages.edit(peer_id=peer_id, message_id=message_id, message=f"✅ Твоя авто-реакция {r_id} задана!")
                                 except: pass
                             continue
 
                         elif text.startswith("/стопреакция"):
                             t_id = get_target_id(text, msg_info, vk)
-                            if t_id in target_reactions:
-                                del target_reactions[t_id]
-                                try: vk.messages.edit(peer_id=peer_id, message_id=message_id, message="✅ Авто-реакция отключена")
+                            if user_id in account_reactions and t_id in account_reactions[user_id]:
+                                del account_reactions[user_id][t_id]
+                                try: vk.messages.edit(peer_id=peer_id, message_id=message_id, message="✅ Твоя авто-реакция отключена")
                                 except: pass
                             continue
                             

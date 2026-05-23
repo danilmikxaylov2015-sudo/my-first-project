@@ -39,12 +39,29 @@ NEG_LINES = [
     "выдайте ему клоуна за этот бред 🤡"
 ]
 
+def get_target_id(text, msg_info, vk):
+    """Вспомогательная функция для определения ID цели по реплаю или тегу"""
+    reply_msg = msg_info.get('reply_message')
+    if reply_msg:
+        return reply_msg['from_id']
+    
+    mention_match = re.search(r'\[(id\d+|[a-zA-Z0-9_\.]+)\|.*?\]', text)
+    if mention_match:
+        raw_mention = mention_match.group(1)
+        if raw_mention.startswith("id"):
+            return int(raw_mention.replace("id", ""))
+        else:
+            resolved = vk.utils.resolveScreenName(screen_name=raw_mention)
+            if resolved and resolved['type'] == 'user':
+                return resolved['object_id']
+    return None
+
 def main():
     vk_session = vk_api.VkApi(token=USER_TOKEN)
     vk = vk_session.get_api()
     longpoll = VkLongPoll(vk_session)
     
-    print("🚀 Бот со всеми фичами и удалением запущен!")
+    print("🚀 Бот со всеми русскими командами и постами запущен!")
 
     for event in longpoll.listen():
         if event.type == VkEventType.MESSAGE_NEW:
@@ -87,25 +104,71 @@ def main():
                     try:
                         reply_msg = msg_info.get('reply_message')
                         if reply_msg:
-                            # Получаем ID целевого сообщения, на которое ответили
                             target_msg_id = reply_msg['id']
-                            
-                            # Сначала сносим само сообщение с командой
                             try: vk.messages.delete(message_ids=message_id, delete_for_all=1)
                             except: pass
-                            
-                            # Пытаемся удалить целевое сообщение для всех
                             vk.messages.delete(message_ids=target_msg_id, delete_for_all=1)
-                    except Exception as e:
-                        print(f"Не удалось удалить сообщение (возможно, нет прав админа): {e}")
+                    exceptException as e:
+                        print(f"Ошибка удаления: {e}")
                     continue
 
-                # Сразу удаляем остальные команды для скрытности
+                # Сразу удаляем саму команду для скрытности в беседе
                 try: vk.messages.delete(message_ids=message_id, delete_for_all=1)
                 except: pass
 
-                # --- КОМАНДА /ОТПРАВИТЬ ---
-                if text.strip() == "/отправить":
+                # --- КОМАНДА: ОПУБЛИКОВАТЬ ПОСТ НА СТЕНУ ---
+                if text.startswith("/опубликовать"):
+                    try:
+                        post_text = text[13:].strip()
+                        if post_text:
+                            # Создаем запись на своей стене (owner_id передавать не нужно, по умолчанию своя)
+                            wall_post = vk.wall.post(message=post_text)
+                            post_id = wall_post.get('post_id')
+                            vk.messages.send(
+                                peer_id=peer_id, 
+                                message=f"✅ Пост успешно опубликован на твоей стене! ID поста: {post_id}", 
+                                random_id=random.randint(1, 1000000)
+                            )
+                        else:
+                            vk.messages.send(
+                                peer_id=peer_id, 
+                                message="⚠️ Напиши текст поста после команды. Пример: /опубликовать Всем привет!", 
+                                random_id=random.randint(1, 1000000)
+                            )
+                    except Exception as e:
+                        vk.messages.send(peer_id=peer_id, message=f"❌ Ошибка публикации поста: {e}", random_id=random.randint(1, 1000000))
+                    continue
+
+                # --- КОМАНДА: СПИСОК ГРУПП ПОЛЬЗОВАТЕЛЯ ---
+                elif text.startswith("/группы"):
+                    try:
+                        t_id = get_target_id(text, msg_info, vk)
+                        if t_id:
+                            groups = vk.groups.get(user_id=t_id, extended=1, count=15)
+                            if groups['items']:
+                                lines = [f"➡️ {g['name']} (vk.com/{g['screen_name']})" for g in groups['items']]
+                                res_text = f"📋 Список открытых групп id{t_id}:\n" + "\n".join(lines)
+                            else:
+                                res_text = f"❌ Группы пользователя id{t_id} скрыты приватностью или отсутствуют."
+                            
+                            vk.messages.send(peer_id=peer_id, message=res_text, random_id=random.randint(1, 1000000))
+                    except Exception as e:
+                        vk.messages.send(peer_id=peer_id, message=f"❌ Ошибка получения групп: {e}", random_id=random.randint(1, 1000000))
+                    continue
+
+                # --- КОМАНДА: ДОБАВИТЬ В ДРУЗЬЯ ---
+                elif text.startswith("/друзья"):
+                    try:
+                        t_id = get_target_id(text, msg_info, vk)
+                        if t_id:
+                            vk.friends.add(user_id=t_id)
+                            vk.messages.send(peer_id=peer_id, message=f"➕ Заявка в друзья пользователю id{t_id} успешно отправлена!", random_id=random.randint(1, 1000000))
+                    except Exception as e:
+                        vk.messages.send(peer_id=peer_id, message=f"❌ Не удалось добавить в друзья: {e}", random_id=random.randint(1, 1000000))
+                    continue
+
+                # --- КОМАНДА /ОТПРАВИТЬ (В ТОТ ЖЕ ЧАТ) ---
+                elif text.strip() == "/отправить":
                     try:
                         vk.messages.send(
                             peer_id=peer_id, 
@@ -115,32 +178,18 @@ def main():
                     except: pass
                     continue
 
-                # --- КОМАНДА /ОТПРЧЕЛУ ---
+                # --- КОМАНДА /ОТПРЧЕЛУ (В ЛС ЖЕРТВЕ) ---
                 elif text.startswith("/отпрчелу"):
                     try:
-                        target_id = None
+                        target_id = get_target_id(text, msg_info, vk)
                         message_to_send = ""
-
-                        # 1. Через ответ на сообщение (reply)
+                        
                         reply_msg = msg_info.get('reply_message')
                         if reply_msg:
-                            target_id = reply_msg['from_id']
                             message_to_send = text[10:].strip()
-                        
-                        # 2. Через упоминание @id или ник
                         else:
-                            mention_match = re.search(r'\[(id\d+|[a-zA-Z0-9_\.]+)\|.*?\]', text)
-                            if mention_match:
-                                raw_mention = mention_match.group(1)
-                                if raw_mention.startswith("id"):
-                                    target_id = int(raw_mention.replace("id", ""))
-                                else:
-                                    resolved = vk.utils.resolveScreenName(screen_name=raw_mention)
-                                    if resolved and resolved['type'] == 'user':
-                                        target_id = resolved['object_id']
-                                
-                                clean_text = re.sub(r'\[.*?\]', '', text).strip()
-                                message_to_send = clean_text[10:].strip()
+                            clean_text = re.sub(r'\[.*?\]', '', text).strip()
+                            message_to_send = clean_text[10:].strip()
 
                         if target_id and message_to_send:
                             vk.messages.send(peer_id=target_id, message=message_to_send, random_id=random.randint(1, 1000000))
@@ -148,7 +197,7 @@ def main():
                     except: pass
                     continue
 
-                # --- ОСТАЛЬНЫЕ КОМАНДЫ ТРОЛЛИНГА ---
+                # --- КОМАНДЫ ТРОЛЛИНГА ---
                 elif text.startswith("/негатив"):
                     try:
                         reply_msg = msg_info.get('reply_message')

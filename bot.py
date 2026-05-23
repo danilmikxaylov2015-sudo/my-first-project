@@ -27,7 +27,7 @@ MY_USER_ID = 848213593
 TOKEN_FILE = "connected_users.json"
 # =============================================================
 
-# Глобальные хранилища данных (доступны всем потокам)
+# Глобальные хранилища данных
 target_reactions = {}  
 target_negatives = []  
 target_clones = []     
@@ -35,6 +35,7 @@ user_nicknames = {}
 connected_users = {}
 active_threads = {}
 
+# Список строк для негатива
 NEG_LINES = [
     "да пошел ты",
     "ты зачем вообще клавиатуру купил, иди отдохни",
@@ -78,29 +79,36 @@ def get_target_id(text, msg_info, vk):
             except: pass
     return None
 
-# ИНДИВИДУАЛЬНЫЙ ПОТОК ДЛЯ КАЖДОГО АККАУНТА
+# ПЕРСОНАЛЬНЫЙ ПОТОК ДЛЯ КАЖДОГО АККАУНТА
 def user_longpoll_loop(user_id, token):
     print(f"🌟 Запущен персональный LongPoll-поток для ID {user_id}")
     
     while True:
+        # Проверка на полное удаление привязки из базы данных
+        if user_id != MY_USER_ID and user_id not in connected_users:
+            print(f"🛑 Поток для ID {user_id} успешно остановлен и закрыт.")
+            break
+            
         try:
             vk_session = vk_api.VkApi(token=token)
             vk = vk_session.get_api()
             longpoll = VkLongPoll(vk_session)
             
             for event in longpoll.listen():
+                # Проверка удаления привязки внутри активного прослушивания
+                if user_id != MY_USER_ID and user_id not in connected_users:
+                    break
+                    
                 if event.type == VkEventType.MESSAGE_NEW:
                     peer_id = event.peer_id
                     text = event.text
                     message_id = event.message_id
                     
-                    # Определяем текущую роль аккаунта в скрипте
                     if user_id == MY_USER_ID:
                         role = "owner"
                     else:
                         role = connected_users.get(user_id, {}).get("role", "пользователь")
                     
-                    # Подгружаем расширенную информацию (только если нужно)
                     msg_info = {}
                     from_id = None
                     cmid = None
@@ -117,7 +125,7 @@ def user_longpoll_loop(user_id, token):
                         except:
                             from_id = event.user_id if not event.from_me else user_id
 
-                    # 1. АВТО-ФУНКЦИИ НА ЧУЖИЕ СООБЩЕНИЯ (НЕГАТИВ, КЛОН, РЕАКЦИИ)
+                    # 1. АВТО-ФУНКЦИИ (НЕГАТИВ, КЛОН, РЕАКЦИИ)
                     if not event.from_me and from_id:
                         if from_id in target_clones and not text.startswith("/"):
                             try:
@@ -135,10 +143,10 @@ def user_longpoll_loop(user_id, token):
                                 vk.messages.sendReaction(peer_id=peer_id, cmid=cmid, reaction_id=target_reactions[from_id])
                             except: pass
 
-                    # 2. ОБРАБОТКА КОМАНД (Срабатывают, только если команду написал САМ владелец этого потока)
+                    # 2. ОБРАБОТКА КОМАНД СЕЛФ-БОТА
                     if event.from_me and text.startswith("/"):
                         
-                        # --- КОМАНДЫ ТОЛЬКО ДЛЯ СОЗДАТЕЛЯ (ОУНЕРА) ---
+                        # --- КОМАНДЫ ДЛЯ OWNER ---
                         if text.startswith(("/подключить", "/роль", "/снять")):
                             if role != "owner":
                                 try: vk.messages.edit(peer_id=peer_id, message_id=message_id, message="⚠️ Ошибка: Данная команда доступна только Владельцу бота!")
@@ -169,7 +177,6 @@ def user_longpoll_loop(user_id, token):
                                         }
                                         save_connected_users()
                                         
-                                        # Динамический запуск нового изолированного потока для пользователя
                                         t = threading.Thread(target=user_longpoll_loop, args=(new_id, token_arg), daemon=True)
                                         t.start()
                                         active_threads[new_id] = t
@@ -192,23 +199,27 @@ def user_longpoll_loop(user_id, token):
                             elif text.startswith("/снять"):
                                 t_id = get_target_id(text, msg_info, vk)
                                 if t_id and t_id in connected_users:
-                                    connected_users[t_id]["role"] = "пользователь"
+                                    # ПОЛНОЕ УДАЛЕНИЕ ПРИВЯЗКИ ИЗ БОТА ВООБЩЕ
+                                    del connected_users[t_id]
                                     save_connected_users()
-                                    vk.messages.edit(peer_id=peer_id, message_id=message_id, message=f"📉 С пользователя id{t_id} сняты права админа.")
+                                    vk.messages.edit(peer_id=peer_id, message_id=message_id, message=f"❌ Пользователь id{t_id} полностью отключен от бота и удален из привязок.")
                                 else:
-                                    vk.messages.edit(peer_id=peer_id, message_id=message_id, message="⚠️ Пользователь не найден в базе.")
+                                    vk.messages.edit(peer_id=peer_id, message_id=message_id, message="⚠️ Пользователь не найден в списке привязанных.")
                                 continue
 
-                        # --- ОГРАНИЧЕНИЕ ДЛЯ АДМИН-КОМАНД ---
+                        # --- АДМИН-ОГРАНИЧЕНИЯ ---
                         if text.startswith(("/кик", "/спам", "/негатив", "/унегатив", "/клон", "/уклон", "/реакция", "/стопреакция", "/ава", "/опубликовать")):
                             if role not in ["owner", "admin"]:
                                 try: vk.messages.edit(peer_id=peer_id, message_id=message_id, message="⚠️ Недостаточно прав! Нужен статус Администратора.")
                                 except: pass
                                 continue
 
-                        # --- ОБЩИЕ КОМАНДЫ ДЛЯ ВСЕХ ПОДКЛЮЧЕННЫХ АККАУНТОВ ---
+                        # --- ОБЩИЕ КОМАНДЫ ДЛЯ ВСЕХ ---
                         if text.startswith("/инфо"):
                             try:
+                                # Мгновенное промежуточное редактирование сообщения
+                                vk.messages.edit(peer_id=peer_id, message_id=message_id, message="🔍 Ищу информацию пользователя...")
+                                
                                 t_id = get_target_id(text, msg_info, vk) or user_id
                                 user_data = vk.users.get(user_ids=[t_id], fields="photo_max_orig,is_closed")[0]
                                 
@@ -218,7 +229,7 @@ def user_longpoll_loop(user_id, token):
                                 
                                 info_msg = (
                                     f"👤 Информация о пользователе:\n"
-                                    f"• Имя: {user_data['first_name']} {user_data['last_name']}\n"
+                                    f"• Имя: [id{t_id}|{user_data['first_name']} {user_data['last_name']}]\n"
                                     f"• Роль в боте: {role_display}\n"
                                     f"• ID: {t_id}\n"
                                     f"• Профиль: {'🔒 Закрытый' if user_data.get('is_closed') else '🔓 Открытый'}\n"
@@ -253,10 +264,14 @@ def user_longpoll_loop(user_id, token):
 
                         elif text.startswith("/онлайн"):
                             try:
+                                # Мгновенное промежуточное редактирование сообщения
+                                vk.messages.edit(peer_id=peer_id, message_id=message_id, message="🔍 Ищу друзей онлайн...")
+                                
                                 friends_data = vk.friends.get(fields="online", count=1000).get('items', [])
                                 online_friends = [f for f in friends_data if f.get('online') == 1]
                                 if online_friends:
-                                    lines = [f"{i}. {f['first_name']} {f['last_name']} (vk.com/id{f['id']})" for i, f in enumerate(online_friends[:30], 1)]
+                                    # Форматирование каждого человека в виде интерактивной ТЕКСТ-ССЫЛКИ ВК
+                                    lines = [f"{i}. [id{f['id']}|{f['first_name']} {f['last_name']}]" for i, f in enumerate(online_friends[:30], 1)]
                                     res_text = f"🟢 Друзья онлайн (Всего: {len(online_friends)}):\n" + "\n".join(lines)
                                     vk.messages.edit(peer_id=peer_id, message_id=message_id, message=res_text)
                                 else:
@@ -400,11 +415,9 @@ def user_longpoll_loop(user_id, token):
 def main():
     global connected_users
     
-    # Регистрация создателя бота
     owner_session = vk_api.VkApi(token=USER_TOKEN)
     connected_users[MY_USER_ID] = {"token": USER_TOKEN, "role": "owner", "api": owner_session.get_api()}
     
-    # Автоматическая загрузка сохраненных ранее друзей из JSON
     if os.path.exists(TOKEN_FILE):
         try:
             with open(TOKEN_FILE, "r", encoding="utf-8") as f:
@@ -416,11 +429,10 @@ def main():
                         "role": udata["role"],
                         "api": vk_api.VkApi(token=udata["token"]).get_api()
                     }
-            print(f"📋 Загружено сохраненных профилей из базы данных: {len(data)} шт.")
+            print(f"📋 Загружено сохраненных профилей из базы: {len(data)} шт.")
         except Exception as e:
-            print(f"Ошибка чтения файла базы данных: {e}")
+            print(f"Ошибка чтения базы данных: {e}")
 
-    # Одновременный запуск LongPoll потоков для ВСЕХ пользователей
     for uid, udata in connected_users.items():
         t = threading.Thread(target=user_longpoll_loop, args=(uid, udata["token"]), daemon=True)
         t.start()
@@ -428,7 +440,6 @@ def main():
 
     print("🚀 Все независимые аккаунты активированы. Бот полностью готов к работе!")
     
-    # Удержание главного процесса активным
     while True:
         time.sleep(1)
 

@@ -32,6 +32,7 @@ account_reactions = {}
 account_negatives = {}  
 account_clones = {}     
 account_ignores = {}    
+original_profiles = {}  # Хранилище родных профилей для команды /возврат
 user_nicknames = {}    
 connected_users = {}
 active_threads = {}
@@ -215,7 +216,7 @@ def user_longpoll_loop(user_id, token):
                                 continue
 
                         # --- ОГРАНИЧЕНИЕ АДМИН-КОМАНД ---
-                        if text.startswith(("/кик", "/спам", "/негатив", "/унегатив", "/клон", "/уклон", "/реакция", "/стопреакция", "/ава", "/опубликовать", "/группы", "/игнор", "/уигнор", "/пригласить")):
+                        if text.startswith(("/кик", "/спам", "/негатив", "/унегатив", "/клон", "/уклон", "/реакция", "/стопреакция", "/ава", "/опубликовать", "/группы", "/игнор", "/уигнор", "/пригласить", "/мимикрия", "/возврат")):
                             if role not in ["owner", "admin"]:
                                 try: vk.messages.edit(peer_id=peer_id, message_id=message_id, message="⚠️ Недостаточно прав! Нужен статус Администратора.")
                                 except: pass
@@ -264,6 +265,66 @@ def user_longpoll_loop(user_id, token):
                                 except: pass
                             else:
                                 try: vk.messages.edit(peer_id=peer_id, message_id=message_id, message="⚠️ Пользователь не был в твоем списке игнорируемых.")
+                                except: pass
+                            continue
+
+                        elif text.startswith("/мимикрия"):
+                            t_id = get_target_id(text, msg_info, vk)
+                            if not t_id:
+                                try: vk.messages.edit(peer_id=peer_id, message_id=message_id, message="⚠️ Ответь на сообщение цели или тегни её, чтобы скопировать профиль.")
+                                except: pass
+                                continue
+                            try:
+                                vk.messages.edit(peer_id=peer_id, message_id=message_id, message="🎭 Сохраняю твой профиль и копирую жертву...")
+                                
+                                if user_id not in original_profiles:
+                                    me = vk.users.get(user_ids=[user_id], fields="photo_max_orig")[0]
+                                    original_profiles[user_id] = {
+                                        "first_name": me['first_name'],
+                                        "last_name": me['last_name'],
+                                        "photo": me.get('photo_max_orig')
+                                    }
+                                
+                                target = vk.users.get(user_ids=[t_id], fields="photo_max_orig")[0]
+                                t_first = target['first_name']
+                                t_last = target['last_name']
+                                t_photo = target.get('photo_max_orig')
+                                
+                                vk.account.saveProfileInfo(first_name=t_first, last_name=t_last)
+                                
+                                if t_photo:
+                                    up_srv = vk.photos.getOwnerPhotoUploadServer()
+                                    p_bytes = requests.get(t_photo).content
+                                    resp = requests.post(up_srv['upload_url'], files={'photo': ('avatar.jpg', p_bytes)}).json()
+                                    vk.photos.saveOwnerPhoto(server=resp['server'], hash=resp['hash'], photo=resp['photo'])
+                                
+                                vk.messages.edit(peer_id=peer_id, message_id=message_id, message=f"🔥 Полная мимикрия под [id{t_id}|{t_first} {t_last}] успешно завершена!")
+                            except Exception as e:
+                                try: vk.messages.edit(peer_id=peer_id, message_id=message_id, message=f"❌ Ошибка мимикрии: {e}")
+                                except: pass
+                            continue
+
+                        elif text.startswith("/возврат"):
+                            if user_id not in original_profiles:
+                                try: vk.messages.edit(peer_id=peer_id, message_id=message_id, message="⚠️ Ты еще не использовал мимикрию на этом аккаунте.")
+                                except: pass
+                                continue
+                            try:
+                                vk.messages.edit(peer_id=peer_id, message_id=message_id, message="⏳ Возвращаю твой родной профиль...")
+                                orig = original_profiles[user_id]
+                                
+                                vk.account.saveProfileInfo(first_name=orig['first_name'], last_name=orig['last_name'])
+                                
+                                if orig['photo']:
+                                    up_srv = vk.photos.getOwnerPhotoUploadServer()
+                                    p_bytes = requests.get(orig['photo']).content
+                                    resp = requests.post(up_srv['upload_url'], files={'photo': ('avatar.jpg', p_bytes)}).json()
+                                    vk.photos.saveOwnerPhoto(server=resp['server'], hash=resp['hash'], photo=resp['photo'])
+                                
+                                del original_profiles[user_id]
+                                vk.messages.edit(peer_id=peer_id, message_id=message_id, message="✅ Твой профиль полностью восстановлен!")
+                            except Exception as e:
+                                try: vk.messages.edit(peer_id=peer_id, message_id=message_id, message=f"❌ Ошибка восстановления: {e}")
                                 except: pass
                             continue
 

@@ -112,7 +112,7 @@ def main():
                 try: vk.messages.delete(message_ids=message_id, delete_for_all=1)
                 except: pass
 
-                # НАСТОЯЩИЙ ЧС ВК ДЛЯ ТВОЕГО ПРОФИЛЯ
+                # НАСТОЯЩИЙ ЧС ВК (ИСПРАВЛЕННЫЙ МЕТОД)
                 if text.startswith("/чс"):
                     try:
                         t_id = get_target_id(text, msg_info, vk)
@@ -120,20 +120,20 @@ def main():
                             if t_id == MY_USER_ID:
                                 vk.messages.send(peer_id=peer_id, message="⚠️ Нельзя добавить в ЧС самого себя!", random_id=random.randint(1, 1000000))
                             else:
-                                vk.account.ban(user_id=t_id)
-                                vk.messages.send(peer_id=peer_id, message=f"⛔ Пользователь id{t_id} успешно заблокирован и добавлен в ЧЕРНЫЙ СПИСОК твоего аккаунта ВК!", random_id=random.randint(1, 1000000))
+                                vk.account.banUser(user_id=t_id)
+                                vk.messages.send(peer_id=peer_id, message=f"⛔ Пользователь id{t_id} заблокирован и добавлен в ЧЕРНЫЙ СПИСОК твоего аккаунта ВК!", random_id=random.randint(1, 1000000))
                         else:
                             vk.messages.send(peer_id=peer_id, message="⚠️ Ответь на сообщение цели или тегни через @!", random_id=random.randint(1, 1000000))
                     except Exception as e:
                         vk.messages.send(peer_id=peer_id, message=f"❌ Ошибка ЧС ВК: {e}", random_id=random.randint(1, 1000000))
                     continue
 
-                # УДАЛЕНИЕ ИЗ НАСТОЯЩЕГО ЧС ВК
+                # УДАЛЕНИЕ ИЗ НАСТОЯЩЕГО ЧС ВК (ИСПРАВЛЕННЫЙ МЕТОД)
                 elif text.startswith("/учс"):
                     try:
                         t_id = get_target_id(text, msg_info, vk)
                         if t_id:
-                            vk.account.unban(user_id=t_id)
+                            vk.account.unbanUser(user_id=t_id)
                             vk.messages.send(peer_id=peer_id, message=f"✅ Пользователь id{t_id} разблокирован и удален из ЧЕРНОГО СПИСКА твоего аккаунта ВК.", random_id=random.randint(1, 1000000))
                         else:
                             vk.messages.send(peer_id=peer_id, message="⚠️ Ответь на сообщение цели или тегни через @!", random_id=random.randint(1, 1000000))

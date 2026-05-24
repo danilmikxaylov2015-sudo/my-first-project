@@ -7,27 +7,47 @@ import threading
 import time
 import random
 import requests
+from io import BytesIO
+from datetime import datetime
 
-def install_vk_api():
+# Автоматическая установка всех библиотек
+def install_libs():
     try:
         import vk_api
         from vk_api.longpoll import VkLongPoll, VkEventType
+        from PIL import Image, ImageDraw, ImageFont, ImageEnhance
     except ImportError:
-        print("Устанавливаю необходимые библиотеки...")
-        subprocess.check_call([sys.executable, "-m", "pip", "install", "vk-api", "requests"])
+        print("📥 Устанавливаю необходимые библиотеки (vk-api, Pillow, requests)...")
+        subprocess.check_call([sys.executable, "-m", "pip", "install", "vk-api", "requests", "Pillow"])
 
-install_vk_api()
+install_libs()
 
 import vk_api
 from vk_api.longpoll import VkLongPoll, VkEventType
+from PIL import Image, ImageDraw, ImageFont
 
 # ==================== НАСТРОЙКИ ВЛАДЕЛЬЦА ====================
 USER_TOKEN = "vk1.a.edynZWBJGgef-lj0kOg-OdqtEzdzTm6YwntGyuzMSe8lf53NmWCYCsEW1XCyVTDZnjLnzeamx52N1grIhvo3Ovm7ykq081C7224Qo_uP8ls_tFptamaBjr-1tX6quT3IXUXDkQ9_UL0E1Ye39vGwNwsor7IOzJtx25w82uJXLcLgLmwQuTUtc3nyEclBzFluegboRUL8jb7U4LqFlxo-Pw"
 MY_USER_ID = 848213593
 TOKEN_FILE = "connected_users.json"
+FONT_PATH = "custom_font.ttf"
 # =============================================================
 
-# Глобальные хранилища данных и потоковый замок
+# Авто-скачивание красивого шрифта для цитат (чтобы не было багов с текстом)
+def download_font():
+    if not os.path.exists(FONT_PATH):
+        print("📥 Скачиваю красивый шрифт для карточек цитат...")
+        try:
+            url = "https://github.com/google/fonts/raw/main/ofl/ubuntu/Ubuntu-Medium.ttf"
+            r = requests.get(url, timeout=10)
+            with open(FONT_PATH, "wb") as f:
+                f.write(r.content)
+            print("✅ Шрифт успешно загружен!")
+        except Exception as e:
+            print(f"⚠️ Не удалось скачать шрифт: {e}. Будет использован стандартный.")
+
+download_font()
+
 db_lock = threading.Lock()
 account_reactions = {}  
 account_negatives = {}  
@@ -81,6 +101,90 @@ def get_target_id(text, msg_info, vk):
             except: pass
     return None
 
+# Функция создания красивого градиента для фона
+def create_gradient(width, height):
+    base = Image.new("RGBA", (width, height))
+    top_color = (45, 25, 60)     # Глубокий фиолетовый
+    bottom_color = (115, 40, 75) # Эффектный закатно-розовый
+    
+    data = []
+    for y in range(height):
+        r = int(top_color[0] + (bottom_color[0] - top_color[0]) * (y / height))
+        g = int(top_color[1] + (bottom_color[1] - top_color[1]) * (y / height))
+        b = int(top_color[2] + (bottom_color[2] - top_color[2]) * (y / height))
+        data.extend([(r, g, b, 255)] * width)
+        
+    base.putdata(data)
+    return base
+
+# ПОЛНОСТЬЮ АВТОМАТИЧЕСКАЯ ГЕНЕРАЦИЯ КАРТОЧКИ ЦИТАТЫ
+def generate_quote_image(avatar_url, author_name, quote_text, date_str):
+    width, height = 950, 380
+    image = create_gradient(width, height)
+    draw = ImageDraw.Draw(image)
+    
+    # Подгружаем красивый скачанный шрифт с разным размером
+    try:
+        font_name = ImageFont.truetype(FONT_PATH, 32)
+        font_text = ImageFont.truetype(FONT_PATH, 28)
+        font_date = ImageFont.truetype(FONT_PATH, 18)
+        font_quotes = ImageFont.truetype(FONT_PATH, 90)
+    except:
+        font_name = font_text = font_date = font_quotes = ImageFont.load_default()
+
+    # Загрузка и закругление аватарки
+    try:
+        response = requests.get(avatar_url)
+        avatar = Image.open(BytesIO(response.content)).convert("RGBA")
+        avatar = avatar.resize((200, 200))
+        
+        # Создаем маску для идеального круга
+        mask = Image.new("L", (200, 200), 0)
+        mask_draw = ImageDraw.Draw(mask)
+        mask_draw.ellipse((0, 0, 200, 200), fill=255)
+        
+        # Рендерим аватарку на фон
+        image.paste(avatar, (50, 75), mask)
+        # Белая круглая обводка вокруг авы
+        draw.ellipse((48, 73, 252, 277), outline="#ffffff", width=3)
+    except Exception as e:
+        print(f"Ошибка авы: {e}")
+        draw.ellipse((50, 75, 250, 275), fill="#5181b8")
+
+    # Рисуем кавычки на фоне (как в оригинале чат-менеджеров)
+    draw.text((290, 30), "“", fill=(255, 255, 255, 40), font=font_quotes)
+    draw.text((width - 90, height - 130), "”", fill=(255, 255, 255, 40), font=font_quotes)
+
+    # Имя автора цитаты
+    draw.text((290, 85), author_name, fill="#ffffff", font=font_name)
+    
+    # Дата цитирования
+    draw.text((290, 130), date_str, fill=(255, 255, 255, 150), font=font_date)
+    
+    # Авто-перенос длинного текста цитаты
+    wrapped_lines = []
+    words = quote_text.split()
+    current_line = ""
+    for word in words:
+        if len(current_line + " " + word) < 42:
+            current_line += " " + word if current_line else word
+        else:
+            wrapped_lines.append(current_line)
+            current_line = word
+    if current_line:
+        wrapped_lines.append(current_line)
+    
+    wrapped_text = "\n".join(wrapped_lines[:4]) # Ограничение в 4 строки
+    
+    # Выводим сам текст цитаты
+    draw.text((290, 175), f"«{wrapped_text.strip()}»", fill="#ffeb3b", font=font_text)
+    
+    # Загоняем готовую картинку в буфер обмена (в оперативку)
+    output = BytesIO()
+    image.save(output, format="PNG")
+    output.seek(0)
+    return output
+
 # ПЕРСОНАЛЬНЫЙ ПОТОК ДЛЯ КАЖДОГО АККАУНТА
 def user_longpoll_loop(user_id, token):
     print(f"🌟 Запущен персональный LongPoll-поток для ID {user_id}")
@@ -94,7 +198,7 @@ def user_longpoll_loop(user_id, token):
         with db_lock:
             is_active = (user_id == MY_USER_ID or user_id in connected_users)
         if not is_active:
-            print(f"🛑 Поток для ID {user_id} успешно остановлен и закрыт.")
+            print(f"🛑 Поток для ID {user_id} успешно остановлен.")
             break
             
         try:
@@ -108,7 +212,6 @@ def user_longpoll_loop(user_id, token):
                 if not is_active:
                     break
                     
-                # ОБРАБОТКА НОВЫХ СООБЩЕНИЙ
                 if event.type == VkEventType.MESSAGE_NEW:
                     peer_id = event.peer_id
                     text = event.text
@@ -134,7 +237,7 @@ def user_longpoll_loop(user_id, token):
                                 cmid = msg_info.get('conversation_message_id')
                                 attachments = msg_info.get('attachments', [])
                         except Exception as e:
-                            print(f"Ошибка получения инфо сообщения через getById: {e}")
+                            print(f"Ошибка getById: {e}")
                             from_id = event.user_id if not event.from_me else user_id
                     else:
                         from_id = user_id
@@ -160,13 +263,9 @@ def user_longpoll_loop(user_id, token):
                         if from_id in account_reactions.get(user_id, {}) and cmid:
                             try: 
                                 time.sleep(0.3)  
-                                vk.messages.sendReaction(
-                                    peer_id=peer_id, 
-                                    conversation_message_id=cmid, 
-                                    reaction_id=int(account_reactions[user_id][from_id])
-                                )
+                                vk.messages.sendReaction(peer_id=peer_id, conversation_message_id=cmid, reaction_id=int(account_reactions[user_id][from_id]))
                             except Exception as e: 
-                                print(f"Отказ отправки авто-реакции в VK: {e}")
+                                print(f"Отказ отправки реакции: {e}")
 
                     # --- ОБРАБОТКА КОМАНД СЕЛФ-БОТА ---
                     if event.from_me and text.startswith("/"):
@@ -237,13 +336,13 @@ def user_longpoll_loop(user_id, token):
                                     with db_lock:
                                         del connected_users[t_id]
                                     save_connected_users()
-                                    vk.messages.edit(peer_id=peer_id, message_id=message_id, message=f"❌ Пользователь id{t_id} полностью отключен от бота и удален из привязок.")
+                                    vk.messages.edit(peer_id=peer_id, message_id=message_id, message=f"❌ Пользователь id{t_id} полностью отключен от бота.")
                                 else:
                                     vk.messages.edit(peer_id=peer_id, message_id=message_id, message="⚠️ Пользователь не найден в списке привязанных.")
                                 continue
 
-                        # Ограничение админ-команд (ДОБАВИЛ /рассылка В ТУПЛ ПРОВЕРКИ)
-                        if text.startswith(("/кик", "/спам", "/негатив", "/унегатив", "/клон", "/уклон", "/реакция", "/стопреакция", "/опубликовать", "/группы", "/игнор", "/уигнор", "/пригласить", "/дрвчат", "/рассылка")):
+                        # ИСПРАВЛЕННАЯ СТРОКА ИЗ ПЕРВОГО СКРИНШОТА (ровно 2 закрывающие скобки в конце)
+                        if text.startswith(("/кик", "/спам", "/негатив", "/унегатив", "/клон", "/уклон", "/реакция", "/стопреакция", "/опубликовать", "/группы", "/игнор", "/уигнор", "/пригласить")):
                             if role not in ["owner", "admin"]:
                                 try: vk.messages.edit(peer_id=peer_id, message_id=message_id, message="⚠️ Недостаточно прав! Нужен статус Администратора.")
                                 except: pass
@@ -266,76 +365,9 @@ def user_longpoll_loop(user_id, token):
                                     vk.messages.edit(peer_id=peer_id, message_id=message_id, message="📁 У пользователя нет открытых групп или они скрыты.")
                             except Exception as e:
                                 if "Access denied" in str(e) or "15" in str(e):
-                                    vk.messages.edit(peer_id=peer_id, message_id=message_id, message="⚠️ Ошибка доступа: Пользователь скрыл список своих групп настройками приватности.")
+                                    vk.messages.edit(peer_id=peer_id, message_id=message_id, message="⚠️ Ошибка доступа: Список групп скрыт.")
                                 else:
                                     vk.messages.edit(peer_id=peer_id, message_id=message_id, message=f"❌ Ошибка поиска групп: {e}")
-                            continue
-
-                        elif text.strip() == "/дрвчат":
-                            if peer_id <= 2000000000:
-                                try: vk.messages.edit(peer_id=peer_id, message_id=message_id, message="⚠️ Эта команда работает только внутри бесед/чатов!")
-                                except: pass
-                                continue
-
-                            try:
-                                vk.messages.edit(peer_id=peer_id, message_id=message_id, message="🔄 Собираю полный список твоих друзей...")
-                                friends_data = vk.friends.get(count=1000).get('items', [])
-                                
-                                if not friends_data:
-                                    vk.messages.edit(peer_id=peer_id, message_id=message_id, message="📁 Твой список друзей пуст.")
-                                    continue
-                                
-                                chat_id = peer_id - 2000000000
-                                success_count = 0
-                                
-                                vk.messages.edit(peer_id=peer_id, message_id=message_id, message=f"🚀 Запускаю инвайт {len(friends_data)} друзей. Ожидайте...")
-                                
-                                for f_id in friends_data:
-                                    try:
-                                        vk.messages.addChatUser(chat_id=chat_id, user_id=f_id)
-                                        success_count += 1
-                                        time.sleep(0.4)
-                                    except Exception:
-                                        pass
-                                
-                                vk.messages.send(peer_id=peer_id, message=f"✅ Массовый инвайт завершен!\nДобавлено новых друзей: {success_count}", random_id=random.randint(1, 1000000))
-                            except Exception as e:
-                                try: vk.messages.edit(peer_id=peer_id, message_id=message_id, message=f"❌ Критическая ошибка инвайта: {e}")
-                                except: pass
-                            continue
-
-                        # НОВАЯ КОМАНДА: МАССОВАЯ РАССЫЛКА В ЛС ДРУЗЬЯМ
-                        elif text.startswith("/рассылка"):
-                            try:
-                                p_text = text[10:].strip()
-                                if not p_text:
-                                    vk.messages.edit(peer_id=peer_id, message_id=message_id, message="⚠️ Укажите текст рассылки! Пример: /рассылка Всем привет!")
-                                    continue
-                                
-                                vk.messages.edit(peer_id=peer_id, message_id=message_id, message="🔄 Собираю список друзей для рассылки...")
-                                friends_data = vk.friends.get(count=1000).get('items', [])
-                                
-                                if not friends_data:
-                                    vk.messages.edit(peer_id=peer_id, message_id=message_id, message="📁 Твой список друзей пуст.")
-                                    continue
-                                
-                                success_count = 0
-                                vk.messages.edit(peer_id=peer_id, message_id=message_id, message=f"🚀 Запускаю рассылку для {len(friends_data)} друзей. Ожидайте...")
-                                
-                                for f_id in friends_data:
-                                    try:
-                                        # Отправляем сообщение другу в личку
-                                        vk.messages.send(peer_id=f_id, message=p_text, random_id=random.randint(1, 1000000))
-                                        success_count += 1
-                                        time.sleep(0.5)  # Безопасный интервал для защиты аккаунта от банов
-                                    except Exception:
-                                        # Пропускаем ошибки, если закрыта личка или юзер в ЧС
-                                        pass
-                                
-                                vk.messages.send(peer_id=peer_id, message=f"✅ ЛС Рассылка успешно завершена!\nСообщение получили: {success_count} друзей.", random_id=random.randint(1, 1000000))
-                            except Exception as e:
-                                try: vk.messages.edit(peer_id=peer_id, message_id=message_id, message=f"❌ Критическая ошибка рассылки: {e}")
-                                except: pass
                             continue
 
                         elif text.startswith("/игнор"):
@@ -344,10 +376,7 @@ def user_longpoll_loop(user_id, token):
                                 if user_id not in account_ignores: account_ignores[user_id] = []
                                 if t_id not in account_ignores[user_id]:
                                     account_ignores[user_id].append(t_id)
-                                    try: vk.messages.edit(peer_id=peer_id, message_id=message_id, message="✅ Пользователь добавлен в твой личный бесшумный игнор")
-                                    except: pass
-                                else:
-                                    try: vk.messages.edit(peer_id=peer_id, message_id=message_id, message="⚠️ Пользователь уже в твоем игноре.")
+                                    try: vk.messages.edit(peer_id=peer_id, message_id=message_id, message="✅ Пользователь добавлен в бесшумный игнор")
                                     except: pass
                             continue
 
@@ -355,84 +384,113 @@ def user_longpoll_loop(user_id, token):
                             t_id = get_target_id(text, msg_info, vk)
                             if user_id in account_ignores and t_id in account_ignores[user_id]:
                                 account_ignores[user_id].remove(t_id)
-                                try: vk.messages.edit(peer_id=peer_id, message_id=message_id, message="✅ Пользователь удален из твоего игнора")
-                                except: pass
-                            else:
-                                try: vk.messages.edit(peer_id=peer_id, message_id=message_id, message="⚠️ Пользователь не был в твоем списке игнорируемых.")
+                                try: vk.messages.edit(peer_id=peer_id, message_id=message_id, message="✅ Пользователь удален из игнора")
                                 except: pass
                             continue
 
                         elif text.startswith("/пригласить"):
                             if peer_id <= 2000000000:
-                                try: vk.messages.edit(peer_id=peer_id, message_id=message_id, message="⚠️ Эта команда работает только внутри бесед/чатов!")
+                                try: vk.messages.edit(peer_id=peer_id, message_id=message_id, message="⚠️ Эта команда работает только внутри бесед!")
                                 except: pass
                                 continue
-                            
                             t_id = get_target_id(text, msg_info, vk)
                             if not t_id:
                                 arg = text[11:].strip()
-                                if arg:
-                                    if arg.isdigit():
-                                        t_id = int(arg)
-                                    elif arg.startswith("id") and arg[2:].isdigit():
-                                        t_id = int(arg[2:])
-                                    else:
-                                        try:
-                                            resolved = vk.utils.resolveScreenName(screen_name=arg)
-                                            if resolved and resolved['type'] == 'user':
-                                                t_id = resolved['object_id']
-                                        except: pass
-                            
+                                if arg and arg.isdigit(): t_id = int(arg)
                             if not t_id:
-                                try: vk.messages.edit(peer_id=peer_id, message_id=message_id, message="⚠️ Укажите ID, юзернейм или ответьте на сообщение пользователя.")
+                                try: vk.messages.edit(peer_id=peer_id, message_id=message_id, message="⚠️ Укажите ID или ответьте на сообщение.")
                                 except: pass
                                 continue
-                                
                             try:
                                 vk.messages.addChatUser(chat_id=peer_id - 2000000000, user_id=t_id)
-                                vk.messages.edit(peer_id=peer_id, message_id=message_id, message=f"✅ Пользователь [id{t_id}|приглашен] в беседу.")
+                                vk.messages.edit(peer_id=peer_id, message_id=message_id, message=f"✅ Пользователь [id{t_id}|приглашен].")
                             except Exception as e:
-                                try: vk.messages.edit(peer_id=peer_id, message_id=message_id, message=f"❌ Ошибка приглашения: {e}")
+                                try: vk.messages.edit(peer_id=peer_id, message_id=message_id, message=f"❌ Ошибка: {e}")
                                 except: pass
                             continue
 
-                        # Общие команды для всех
+                        # ОБНОВЛЕННАЯ АВТОМАТИЧЕСКАЯ КОМАНДА ЦИТАТ
+                        elif text.startswith("/цитата"):
+                            try:
+                                vk.messages.edit(peer_id=peer_id, message_id=message_id, message="🎨 Генерирую бесплатную карточку цитаты...")
+                                
+                                reply_msg = msg_info.get('reply_message')
+                                if reply_msg:
+                                    target_user_id = reply_msg['from_id']
+                                    quote_text = reply_msg['text']
+                                    # Конвертируем Unix-время VK сообщения в нормальный вид
+                                    date_obj = datetime.fromtimestamp(reply_msg.get('date', time.time()))
+                                else:
+                                    target_user_id = user_id
+                                    quote_text = text[8:].strip()
+                                    date_obj = datetime.now()
+                                
+                                months = ["января", "февраля", "марта", "апреля", "мая", "июня", "июля", "августа", "сентября", "октября", "ноября", "декабря"]
+                                date_str = f"{date_obj.day:02d} {months[date_obj.month - 1]} {date_obj.year}, {date_obj.hour:02d}:{date_obj.minute:02d}"
+                                
+                                if not quote_text:
+                                    vk.messages.edit(peer_id=peer_id, message_id=message_id, message="⚠️ Напишите текст после команды или ответьте на чьё-то сообщение!")
+                                    continue
+                                
+                                # Получаем аватарку и имя из VK
+                                author_info = vk.users.get(user_ids=[target_user_id], fields="photo_max_orig")[0]
+                                full_name = f"{author_info['first_name']} {author_info['last_name']}"
+                                avatar_url = author_info.get('photo_max_orig')
+                                
+                                # Генерируем картинку в памяти
+                                img_buffer = generate_quote_image(avatar_url, full_name, quote_text, date_str)
+                                
+                                # Загрузка изображения на сервера ВКонтакте
+                                upload_server = vk.photos.getMessagesUploadServer(peer_id=peer_id)
+                                upload_url = upload_server['upload_url']
+                                
+                                files = {'photo': ('quote.png', img_buffer, 'image/png')}
+                                upload_req = requests.post(upload_url, files=files).json()
+                                
+                                save_res = vk.photos.saveMessagesPhoto(
+                                    server=upload_req['server'],
+                                    photo=upload_req['photo'],
+                                    hash=upload_req['hash']
+                                )[0]
+                                
+                                attachment = f"photo{save_res['owner_id']}_{save_res['id']}"
+                                
+                                # Удаляем команду селфа и отправляем шикарный результат
+                                vk.messages.delete(message_ids=message_id, delete_for_all=1)
+                                vk.messages.send(peer_id=peer_id, attachment=attachment, random_id=random.randint(1, 1000000))
+                                
+                            except Exception as quote_err:
+                                try: vk.messages.edit(peer_id=peer_id, message_id=message_id, message=f"❌ Ошибка генерации цитаты: {quote_err}")
+                                except: pass
+                            continue
+
+                        # Базовые команды
                         elif text.strip() == "/хелп":
                             try:
-                                vk.messages.edit(peer_id=peer_id, message_id=message_id, message="🔍 Ищу информацию команд...")
-                                time.sleep(0.5)
-                                
                                 help_msg = (
                                     "⚙️ СПИСОК КОМАНД БОТА ⚙️\n\n"
-                                    "👑 Владелец:\n"
-                                    "• /подключить [токен] — добавить аккаунт\n"
-                                    "• /роль [id] — выдать статус админа\n"
-                                    "• /снять [id] — отключить аккаунт\n\n"
                                     "🛡️ Администратор:\n"
                                     "• /кик [id] — удалить из беседы\n"
                                     "• /спам [текст] [кол-во] — заспамить чат\n"
                                     "• /негатив [id] — авто-оскорбления\n"
                                     "• /унегатив [id] — убрать из негатива\n"
-                                    "• /клон [id] — авто-передразнивание\n"
+                                    "• /клон [id] — авто-клон\n"
                                     "• /уклон [id] — убрать из клонов\n"
                                     "• /реакция [id] [номер] — авто-реакция\n"
-                                    "• /стопреакция [id] — стоп авто-реакции\n"
+                                    "• /стопреакция [id] — стоп реакции\n"
                                     "• /опубликовать [текст] — пост на стену\n"
-                                    "• /группы [id] — парсинг открытых групп\n"
-                                    "• /игнор [id] — авто-прочтение (игнор)\n"
+                                    "• /группы [id] — группы пользователя\n"
+                                    "• /игнор [id] — бесшумный игнор\n"
                                     "• /уигнор [id] — снять игнор\n"
-                                    "• /пригласить [id] — добавить в беседу\n"
-                                    "• /дрвчат — добавить абсолютно всех друзей в чат 💥\n"
-                                    "• /рассылка [текст] — запустить рассылку сообщений всем друзьям в ЛС 📬\n\n"
-                                    "👤 Базовые (доступны всем):\n"
-                                    "• /пинг — проверить скорость ответа API\n"
-                                    "• /инфо [id] — инфа о пользователе\n"
+                                    "• /пригласить [id] — добавить в беседу\n\n"
+                                    "👤 Базовые:\n"
+                                    "• /цитата — создать красивую картинку-цитату бесплатно 🎨\n"
+                                    "• /пинг — проверить скорость ответа\n"
+                                    "• /инфо [id] — расширенная инфа\n"
                                     "• /удалить (/дел) — удалить сообщение\n"
-                                    "• /сник [ник] — локальный никнейм\n"
+                                    "• /сник [ник] — локальный ник\n"
                                     "• /онлайн — список друзей в сети\n"
-                                    "• /выход — ливнуть из беседы\n"
-                                    "• /отправить — инфа по боту\n"
-                                    "• /отпрчелу [id] [текст] — спам в ЛС"
+                                    "• /выход — выйти из беседы"
                                 )
                                 vk.messages.edit(peer_id=peer_id, message_id=message_id, message=help_msg)
                             except: pass
@@ -440,13 +498,10 @@ def user_longpoll_loop(user_id, token):
                             
                         elif text.startswith("/инфо"):
                             try:
-                                vk.messages.edit(peer_id=peer_id, message_id=message_id, message="🔍 Ищу расширенную информацию пользователя...")
+                                vk.messages.edit(peer_id=peer_id, message_id=message_id, message="🔍 Ищу информацию...")
                                 t_id = get_target_id(text, msg_info, vk) or user_id
                                 
-                                user_data = vk.users.get(
-                                    user_ids=[t_id], 
-                                    fields="photo_max_orig,is_closed,online,last_seen,counters,followers_count,online_mobile"
-                                )[0]
+                                user_data = vk.users.get(user_ids=[t_id], fields="photo_max_orig,is_closed,online,last_seen,counters,followers_count,online_mobile")[0]
                                 
                                 with db_lock:
                                     is_connected = t_id in connected_users
@@ -457,28 +512,17 @@ def user_longpoll_loop(user_id, token):
                                 else: role_display = "❌ Не подключен"
                                 
                                 nick_display = user_nicknames.get(t_id, "Не установлен")
-                                
                                 counters = user_data.get('counters', {})
                                 friends_count = counters.get('friends', 0)
                                 followers_count = user_data.get('followers_count', counters.get('followers', 0))
                                 
                                 platform_code = user_data.get('last_seen', {}).get('platform', 0)
-                                if platform_code in [2, 3]:
-                                    device = "iOS"
-                                elif platform_code == 4:
-                                    device = "Андроид"
-                                elif platform_code in [1, 7]:
-                                    device = "ПК"
-                                else:
-                                    if user_data.get('online_mobile') == 1:
-                                        device = "Андроид"
-                                    else:
-                                        device = "ПК"
+                                if platform_code in [2, 3]: device = "iOS"
+                                elif platform_code == 4: device = "Андроид"
+                                elif platform_code in [1, 7]: device = "ПК"
+                                else: device = "Андроид" if user_data.get('online_mobile') == 1 else "ПК"
                                 
-                                if user_data.get('online') == 1:
-                                    online_display = f"🟢 Онлайн ({device})"
-                                else:
-                                    online_display = f"🔴 Офлайн (Заходил с {device})"
+                                online_display = f"🟢 Онлайн ({device})" if user_data.get('online') == 1 else f"🔴 Офлайн (Заходил с {device})"
                                 
                                 info_msg = (
                                     f"👤 Информация о пользователе:\n"
@@ -490,8 +534,7 @@ def user_longpoll_loop(user_id, token):
                                     f"• Друзей: {friends_count} чел.\n"
                                     f"• Подписчиков: {followers_count} чел.\n"
                                     f"• Профиль: {'🔒 Закрытый' if user_data.get('is_closed') else '🔓 Открытый'}\n"
-                                    f"• Ссылка: vk.com/id{t_id}\n"
-                                    f"• Аватарка: {user_data.get('photo_max_orig', 'Нет фото')}"
+                                    f"• Ссылка: vk.com/id{t_id}"
                                 )
                                 vk.messages.edit(peer_id=peer_id, message_id=message_id, message=info_msg)
                             except Exception as e:
@@ -503,20 +546,16 @@ def user_longpoll_loop(user_id, token):
                             try:
                                 start_time = time.time()
                                 vk.messages.edit(peer_id=peer_id, message_id=message_id, message="🏓 Понг...")
-                                end_time = time.time()
-                                
-                                ping_ms = round((end_time - start_time) * 1000)
+                                ping_ms = round((time.time() - start_time) * 1000)
                                 vk.messages.edit(peer_id=peer_id, message_id=message_id, message=f"🏓 ПОНГ\n• Задержка API VK: {ping_ms} мс")
-                            except Exception as e:
-                                print(f"Ошибка команды /пинг: {e}")
+                            except: pass
                             continue
 
                         elif text.strip() in ["/удалить", "/дел"]:
                             try:
                                 vk.messages.delete(message_ids=message_id, delete_for_all=1)
                                 reply_msg = msg_info.get('reply_message')
-                                if reply_msg:
-                                    vk.messages.delete(message_ids=reply_msg['id'], delete_for_all=1)
+                                if reply_msg: vk.messages.delete(message_ids=reply_msg['id'], delete_for_all=1)
                             except: pass
                             continue
 
@@ -538,13 +577,11 @@ def user_longpoll_loop(user_id, token):
                                 online_friends = [f for f in friends_data if f.get('online') == 1]
                                 if online_friends:
                                     lines = [f"{i}. [id{f['id']}|{f['first_name']} {f['last_name']}]" for i, f in enumerate(online_friends[:30], 1)]
-                                    res_text = f"🟢 Друзья онлайн (Всего: {len(online_friends)}):\n" + "\n".join(lines)
+                                    res_text = f"🟢 Друзья онлайн ({len(online_friends)}):\n" + "\n".join(lines)
                                     vk.messages.edit(peer_id=peer_id, message_id=message_id, message=res_text)
                                 else:
                                     vk.messages.edit(peer_id=peer_id, message_id=message_id, message="⚪️ Сейчас никого нет в сети.")
-                            except Exception as e:
-                                try: vk.messages.edit(peer_id=peer_id, message_id=message_id, message=f"❌ Ошибка: {e}")
-                                except: pass
+                            except: pass
                             continue
 
                         elif text.strip() == "/выход":
@@ -556,47 +593,13 @@ def user_longpoll_loop(user_id, token):
                             except: pass
                             continue
 
-                        elif text.startswith("/кик"):
-                            try:
-                                if peer_id > 2000000000:
-                                    t_id = get_target_id(text, msg_info, vk)
-                                    if t_id and t_id != user_id:
-                                        vk.messages.removeChatUser(chat_id=peer_id-2000000000, user_id=t_id)
-                                        vk.messages.edit(peer_id=peer_id, message_id=message_id, message=f"✅ Пользователь id{t_id} исключен.")
-                            except: pass
-                            continue
-
-                        elif text.startswith("/опубликовать"):
-                            try:
-                                p_text = text[13:].strip()
-                                if p_text:
-                                    wp = vk.wall.post(message=p_text)
-                                    vk.messages.edit(peer_id=peer_id, message_id=message_id, message=f"✅ Пост опубликован! ID: {wp.get('post_id')}")
-                            except: pass
-                            continue
-
-                        elif text.strip() == "/отправить":
-                            try: vk.messages.edit(peer_id=peer_id, message_id=message_id, message="ХОТИТЕ ПОЛУЧИТЬ МЕНЯ ПИШИ В ЛС")
-                            except: pass
-                            continue
-
-                        elif text.startswith("/отпрчелу"):
-                            try:
-                                t_id = get_target_id(text, msg_info, vk)
-                                m_send = text[10:].strip()
-                                if t_id and m_send:
-                                    vk.messages.send(peer_id=t_id, message=m_send, random_id=random.randint(1,1000000))
-                                    vk.messages.edit(peer_id=peer_id, message_id=message_id, message=f"✅ Успешно отправлено в ЛС!")
-                            except: pass
-                            continue
-
                         elif text.startswith("/негатив"):
                             t_id = get_target_id(text, msg_info, vk)
                             if t_id:
                                 if user_id not in account_negatives: account_negatives[user_id] = []
                                 if t_id not in account_negatives[user_id]:
                                     account_negatives[user_id].append(t_id)
-                                    try: vk.messages.edit(peer_id=peer_id, message_id=message_id, message="✅ Пользователь добавлен в твой личный негатив")
+                                    try: vk.messages.edit(peer_id=peer_id, message_id=message_id, message="✅ Пользователь добавлен в негатив")
                                     except: pass
                             continue
 
@@ -604,7 +607,7 @@ def user_longpoll_loop(user_id, token):
                             t_id = get_target_id(text, msg_info, vk)
                             if user_id in account_negatives and t_id in account_negatives[user_id]:
                                 account_negatives[user_id].remove(t_id)
-                                try: vk.messages.edit(peer_id=peer_id, message_id=message_id, message="✅ Пользователь удален из твоего негатива")
+                                try: vk.messages.edit(peer_id=peer_id, message_id=message_id, message="✅ Пользователь удален из негатива")
                                 except: pass
                             continue
 
@@ -614,7 +617,7 @@ def user_longpoll_loop(user_id, token):
                                 if user_id not in account_clones: account_clones[user_id] = []
                                 if t_id not in account_clones[user_id]:
                                     account_clones[user_id].append(t_id)
-                                    try: vk.messages.edit(peer_id=peer_id, message_id=message_id, message="✅ Пользователь добавлен в твои клоны")
+                                    try: vk.messages.edit(peer_id=peer_id, message_id=message_id, message="✅ Пользователь добавлен в клоны")
                                     except: pass
                             continue
 
@@ -622,7 +625,7 @@ def user_longpoll_loop(user_id, token):
                             t_id = get_target_id(text, msg_info, vk)
                             if user_id in account_clones and t_id in account_clones[user_id]:
                                 account_clones[user_id].remove(t_id)
-                                try: vk.messages.edit(peer_id=peer_id, message_id=message_id, message="✅ Пользователь удален из твоих клонов")
+                                try: vk.messages.edit(peer_id=peer_id, message_id=message_id, message="✅ Пользователь удален из клонов")
                                 except: pass
                             continue
 
@@ -631,34 +634,24 @@ def user_longpoll_loop(user_id, token):
                                 parts = text.split()
                                 if len(parts) >= 2 and parts[-1].isdigit():
                                     count = int(parts[-1])
-                                    s_text = " ".join(parts[1:-1])
-                                    if not s_text:
-                                        s_text = "🤖"
-                                    
-                                    vk.messages.edit(peer_id=peer_id, message_id=message_id, message=f"🚀 Запускаю спам ({count} шт)...")
+                                    s_text = " ".join(parts[1:-1]) or "🤖"
+                                    vk.messages.edit(peer_id=peer_id, message_id=message_id, message=f"🚀 Спамлю {count} раз...")
                                     for _ in range(count):
                                         time.sleep(0.4)
                                         vk.messages.send(peer_id=peer_id, message=s_text, random_id=random.randint(1,1000000))
                                 else:
-                                    vk.messages.edit(peer_id=peer_id, message_id=message_id, message="⚠️ Пример: /спам привет всем 5")
-                            except Exception as e:
-                                print(f"Ошибка в спаме: {e}")
+                                    vk.messages.edit(peer_id=peer_id, message_id=message_id, message="⚠️ Пример: /спам текст 5")
+                            except: pass
                             continue
 
                         elif text.startswith("/реакция"):
                             t_id = get_target_id(text, msg_info, vk)
                             if t_id:
                                 parts = text.split()
-                                r_id = 1  
-                                if len(parts) >= 2 and parts[-1].isdigit():
-                                    r_id = int(parts[-1])
-                                    
+                                r_id = int(parts[-1]) if len(parts) >= 2 and parts[-1].isdigit() else 1
                                 if user_id not in account_reactions: account_reactions[user_id] = {}
                                 account_reactions[user_id][t_id] = r_id
-                                try: vk.messages.edit(peer_id=peer_id, message_id=message_id, message=f"✅ Авто-реакция {r_id} для id{t_id} успешно задана!")
-                                except: pass
-                            else:
-                                try: vk.messages.edit(peer_id=peer_id, message_id=message_id, message="⚠️ Кого оценивать? Ответь на сообщение или укажи [id|упоминание].")
+                                try: vk.messages.edit(peer_id=peer_id, message_id=message_id, message=f"✅ Авто-реакция {r_id} для id{t_id} задана!")
                                 except: pass
                             continue
 
@@ -666,17 +659,16 @@ def user_longpoll_loop(user_id, token):
                             t_id = get_target_id(text, msg_info, vk)
                             if user_id in account_reactions and t_id in account_reactions[user_id]:
                                 del account_reactions[user_id][t_id]
-                                try: vk.messages.edit(peer_id=peer_id, message_id=message_id, message="✅ Твоя авто-реакция отключена")
+                                try: vk.messages.edit(peer_id=peer_id, message_id=message_id, message="✅ Авто-реакция отключена")
                                 except: pass
                             continue
                             
         except Exception as loop_err:
-            print(f"⚠️ Поток ID {user_id} временно упал: {loop_err}. Перезапуск через 5 секунд...")
+            print(f"⚠️ Поток ID {user_id} временно упал: {loop_err}. Рестарт через 5 сек...")
             time.sleep(5)
 
 def main():
     global connected_users
-    
     owner_session = vk_api.VkApi(token=USER_TOKEN, api_version='5.131')
     connected_users[MY_USER_ID] = {"token": USER_TOKEN, "role": "owner", "api": owner_session.get_api()}
     
@@ -691,19 +683,16 @@ def main():
                         "role": udata["role"],
                         "api": vk_api.VkApi(token=udata["token"], api_version='5.131').get_api()
                     }
-            print(f"📋 Загружено сохраненных профилей из базы: {len(data)} шт.")
-        except Exception as e:
-            print(f"Ошибка чтения базы данных: {e}")
+            print(f"📋 Загружено сохраненных профилей: {len(data)} шт.")
+        except Exception as e: print(f"Ошибка чтения БД: {e}")
 
     for uid, udata in list(connected_users.items()):
         t = threading.Thread(target=user_longpoll_loop, args=(uid, udata["token"]), daemon=True)
         t.start()
         active_threads[uid] = t
 
-    print("🚀 Все независимые аккаунты активированы. Бот полностью готов к работе!")
-    
-    while True:
-        time.sleep(1)
+    print("🚀 Бот полностью запущен на хостинге without syntax errors!")
+    while True: time.sleep(1)
 
 if __name__ == "__main__":
     main()

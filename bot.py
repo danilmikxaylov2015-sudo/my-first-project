@@ -98,7 +98,6 @@ def user_longpoll_loop(user_id, token):
             break
             
         try:
-            # Принудительно задаем версию 5.131 для поддержки реакций
             vk_session = vk_api.VkApi(token=token, api_version='5.131')
             vk = vk_session.get_api()
             longpoll = VkLongPoll(vk_session)
@@ -128,7 +127,6 @@ def user_longpoll_loop(user_id, token):
                     
                     if not event.from_me or text.startswith("/"):
                         try:
-                            # ИСПРАВЛЕНО: передаем message_id в виде списка [message_id]
                             res = vk.messages.getById(message_ids=[message_id])
                             if res and res.get('items'):
                                 msg_info = res['items'][0]
@@ -159,10 +157,9 @@ def user_longpoll_loop(user_id, token):
                                 vk.messages.send(peer_id=peer_id, message=random.choice(NEG_LINES), reply_to=message_id, random_id=random.randint(1, 1000000))
                             except: pass
 
-                        # ИСПРАВЛЕНО: Теперь этот блок стабильно получает cmid и ставит реакцию
                         if from_id in account_reactions.get(user_id, {}) and cmid:
                             try: 
-                                time.sleep(0.3)  # Небольшая пауза для корректных лимитов VK
+                                time.sleep(0.3)  
                                 vk.messages.sendReaction(
                                     peer_id=peer_id, 
                                     conversation_message_id=cmid, 
@@ -245,8 +242,8 @@ def user_longpoll_loop(user_id, token):
                                     vk.messages.edit(peer_id=peer_id, message_id=message_id, message="⚠️ Пользователь не найден в списке привязанных.")
                                 continue
 
-                        # Ограничение админ-команд
-                        if text.startswith(("/кик", "/спам", "/негатив", "/унегатив", "/клон", "/уклон", "/реакция", "/стопреакция", "/опубликовать", "/группы", "/игнор", "/уигнор", "/пригласить"))):
+                        # Ограничение админ-команд (ИСПРАВЛЕНО: убрана лишняя скобка)
+                        if text.startswith(("/кик", "/спам", "/негатив", "/унегатив", "/клон", "/уклон", "/реакция", "/стопреакция", "/опубликовать", "/группы", "/игнор", "/уигнор", "/пригласить")):
                             if role not in ["owner", "admin"]:
                                 try: vk.messages.edit(peer_id=peer_id, message_id=message_id, message="⚠️ Недостаточно прав! Нужен статус Администратора.")
                                 except: pass
@@ -537,12 +534,11 @@ def user_longpoll_loop(user_id, token):
                                 print(f"Ошибка в спаме: {e}")
                             continue
 
-                        # ИСПРАВЛЕНО: Безопасный разбор аргументов команды реакции
                         elif text.startswith("/реакция"):
                             t_id = get_target_id(text, msg_info, vk)
                             if t_id:
                                 parts = text.split()
-                                r_id = 1  # По умолчанию лайк (ID: 1)
+                                r_id = 1  
                                 if len(parts) >= 2 and parts[-1].isdigit():
                                     r_id = int(parts[-1])
                                     

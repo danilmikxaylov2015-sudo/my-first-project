@@ -242,7 +242,7 @@ def user_longpoll_loop(user_id, token):
                                     vk.messages.edit(peer_id=peer_id, message_id=message_id, message="⚠️ Пользователь не найден в списке привязанных.")
                                 continue
 
-                        # Ограничение админ-команд (ИСПРАВЛЕНО: убрана лишняя скобка)
+                        # Ограничение админ-команд
                         if text.startswith(("/кик", "/спам", "/негатив", "/унегатив", "/клон", "/уклон", "/реакция", "/стопреакция", "/опубликовать", "/группы", "/игнор", "/уигнор", "/пригласить")):
                             if role not in ["owner", "admin"]:
                                 try: vk.messages.edit(peer_id=peer_id, message_id=message_id, message="⚠️ Недостаточно прав! Нужен статус Администратора.")
@@ -357,6 +357,8 @@ def user_longpoll_loop(user_id, token):
                                     "• /пригласить [id] — добавить в беседу\n\n"
                                     "👤 Базовые (доступны всем):\n"
                                     "• /инфо [id] — инфа о пользователе\n"
+                                    "• /рег [id] — узнать дату регистрации аккаунта\n"
+                                    "• /друзья [id] — отправить запрос в друзья\n"
                                     "• /удалить (/дел) — удалить сообщение\n"
                                     "• /сник [ник] — локальный никнейм\n"
                                     "• /онлайн — список друзей в сети\n"
@@ -397,6 +399,57 @@ def user_longpoll_loop(user_id, token):
                                 vk.messages.edit(peer_id=peer_id, message_id=message_id, message=info_msg)
                             except Exception as e:
                                 try: vk.messages.edit(peer_id=peer_id, message_id=message_id, message=f"❌ Ошибка инфо: {e}")
+                                except: pass
+                            continue
+
+                        elif text.startswith("/рег"):
+                            try:
+                                vk.messages.edit(peer_id=peer_id, message_id=message_id, message="🔍 Получаю дату регистрации...")
+                                t_id = get_target_id(text, msg_info, vk) or user_id
+                                
+                                # Запрос по FOAF протоколу VK
+                                response = requests.get(f"https://vk.com/foaf.php?id={t_id}", headers={"User-Agent": "Mozilla/5.0"}, timeout=5)
+                                html = response.text
+                                
+                                date_match = re.search(r'<ya:created ya:date="([^"T]+)T([^"+]+)', html)
+                                if date_match:
+                                    reg_date = date_match.group(1)  # ГГГГ-ММ-ДД
+                                    reg_time = date_match.group(2)  # ЧЧ:ММ:СС
+                                    
+                                    parts = reg_date.split("-")
+                                    beautiful_date = f"{parts[2]}.{parts[1]}.{parts[0]}"
+                                    
+                                    vk.messages.edit(peer_id=peer_id, message_id=message_id, message=f"📅 Аккаунт [id{t_id}|пользователя] зарегистрирован:\n• Дата: {beautiful_date}\n• Время: {reg_time}")
+                                else:
+                                    vk.messages.edit(peer_id=peer_id, message_id=message_id, message="❌ Не удалось определить дату. Возможно, это сообщество или бот.")
+                            except Exception as e:
+                                try: vk.messages.edit(peer_id=peer_id, message_id=message_id, message=f"❌ Ошибка парсинга даты: {e}")
+                                except: pass
+                            continue
+
+                        elif text.startswith("/друзья"):
+                            try:
+                                t_id = get_target_id(text, msg_info, vk)
+                                if not t_id:
+                                    vk.messages.edit(peer_id=peer_id, message_id=message_id, message="⚠️ Кому отправить запрос? Ответь на сообщение или укажи ссылку/[id].")
+                                    continue
+                                    
+                                vk.messages.edit(peer_id=peer_id, message_id=message_id, message="⏳ Отправляю запрос в друзья...")
+                                res = vk.friends.add(user_id=t_id)
+                                
+                                # 1 — заявка отправлена, 2 — заявка одобрена (стали друзьями), 4 — повторная отправка
+                                if res == 1:
+                                    msg = f"✅ Заявка в друзья пользователю id{t_id} успешно отправлена!"
+                                elif res == 2:
+                                    msg = f"🤝 Пользователь id{t_id} уже отправлял тебе заявку. Теперь вы друзья!"
+                                elif res == 4:
+                                    msg = f"⚠️ Заявка пользователю id{t_id} уже была отправлена ранее."
+                                else:
+                                    msg = f"✅ Статус отправки: {res}"
+                                    
+                                vk.messages.edit(peer_id=peer_id, message_id=message_id, message=msg)
+                            except Exception as e:
+                                try: vk.messages.edit(peer_id=peer_id, message_id=message_id, message=f"❌ Ошибка добавления в друзья: {e}")
                                 except: pass
                             continue
 

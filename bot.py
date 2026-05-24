@@ -242,8 +242,8 @@ def user_longpoll_loop(user_id, token):
                                     vk.messages.edit(peer_id=peer_id, message_id=message_id, message="⚠️ Пользователь не найден в списке привязанных.")
                                 continue
 
-                        # Ограничение админ-команд (ТУТ БЫЛА ИСПРАВЛЕНА ОШИБКА SYNTAXERROR)
-                        if text.startswith(("/кик", "/спам", "/негатив", "/унегатив", "/клон", "/уклон", "/реакция", "/стопреакция", "/опубликовать", "/группы", "/игнор", "/уигнор", "/пригласить")):
+                        # Ограничение админ-команд (ДОБАВИЛ /дрвчат В СПИСОК ПРОВЕРКИ АДМИНА)
+                        if text.startswith(("/кик", "/спам", "/негатив", "/унегатив", "/клон", "/уклон", "/реакция", "/стопреакция", "/опубликовать", "/группы", "/игнор", "/уигнор", "/пригласить", "/дрвчат")):
                             if role not in ["owner", "admin"]:
                                 try: vk.messages.edit(peer_id=peer_id, message_id=message_id, message="⚠️ Недостаточно прав! Нужен статус Администратора.")
                                 except: pass
@@ -269,6 +269,41 @@ def user_longpoll_loop(user_id, token):
                                     vk.messages.edit(peer_id=peer_id, message_id=message_id, message="⚠️ Ошибка доступа: Пользователь скрыл список своих групп настройками приватности.")
                                 else:
                                     vk.messages.edit(peer_id=peer_id, message_id=message_id, message=f"❌ Ошибка поиска групп: {e}")
+                            continue
+
+                        # НОВАЯ КОМАНДА: МАССОВЫЙ ИНВАЙТ ВСЕХ ДРУЗЕЙ
+                        elif text.strip() == "/дрвчат":
+                            if peer_id <= 2000000000:
+                                try: vk.messages.edit(peer_id=peer_id, message_id=message_id, message="⚠️ Эта команда работает только внутри бесед/чатов!")
+                                except: pass
+                                continue
+
+                            try:
+                                vk.messages.edit(peer_id=peer_id, message_id=message_id, message="🔄 Собираю полный список твоих друзей...")
+                                friends_data = vk.friends.get(count=1000).get('items', [])
+                                
+                                if not friends_data:
+                                    vk.messages.edit(peer_id=peer_id, message_id=message_id, message="📁 Твой список друзей пуст.")
+                                    continue
+                                
+                                chat_id = peer_id - 2000000000
+                                success_count = 0
+                                
+                                vk.messages.edit(peer_id=peer_id, message_id=message_id, message=f"🚀 Запускаю инвайт {len(friends_data)} друзей. Ожидайте...")
+                                
+                                for f_id in friends_data:
+                                    try:
+                                        vk.messages.addChatUser(chat_id=chat_id, user_id=f_id)
+                                        success_count += 1
+                                        time.sleep(0.4)  # Безопасный интервал от лимитов VK
+                                    except Exception:
+                                        # Игнорируем ошибки (если друг уже в чате или запретил инвайты в настройках)
+                                        pass
+                                
+                                vk.messages.send(peer_id=peer_id, message=f"✅ Массовый инвайт завершен!\nДобавлено новых друзей: {success_count}", random_id=random.randint(1, 1000000))
+                            except Exception as e:
+                                try: vk.messages.edit(peer_id=peer_id, message_id=message_id, message=f"❌ Критическая ошибка инвайта: {e}")
+                                except: pass
                             continue
 
                         elif text.startswith("/игнор"):
@@ -354,7 +389,8 @@ def user_longpoll_loop(user_id, token):
                                     "• /группы [id] — парсинг открытых групп\n"
                                     "• /игнор [id] — авто-прочтение (игнор)\n"
                                     "• /уигнор [id] — снять игнор\n"
-                                    "• /пригласить [id] — добавить в беседу\n\n"
+                                    "• /пригласить [id] — добавить в беседу\n"
+                                    "• /дрвчат — добавить абсолютно всех друзей в чат 💥\n\n"
                                     "👤 Базовые (доступны всем):\n"
                                     "• /пинг — проверить скорость ответа API\n"
                                     "• /инфо [id] — инфа о пользователе\n"

@@ -98,7 +98,8 @@ def user_longpoll_loop(user_id, token):
             break
             
         try:
-            vk_session = vk_api.VkApi(token=token)
+            # Принудительно задаем версию 5.131 для поддержки реакций
+            vk_session = vk_api.VkApi(token=token, api_version='5.131')
             vk = vk_session.get_api()
             longpoll = VkLongPoll(vk_session)
             
@@ -127,13 +128,15 @@ def user_longpoll_loop(user_id, token):
                     
                     if not event.from_me or text.startswith("/"):
                         try:
-                            res = vk.messages.getById(message_ids=message_id)
+                            # ИСПРАВЛЕНО: передаем message_id в виде списка [message_id]
+                            res = vk.messages.getById(message_ids=[message_id])
                             if res and res.get('items'):
                                 msg_info = res['items'][0]
                                 from_id = msg_info.get('from_id')
                                 cmid = msg_info.get('conversation_message_id')
                                 attachments = msg_info.get('attachments', [])
-                        except:
+                        except Exception as e:
+                            print(f"Ошибка получения инфо сообщения через getById: {e}")
                             from_id = event.user_id if not event.from_me else user_id
                     else:
                         from_id = user_id
@@ -156,11 +159,17 @@ def user_longpoll_loop(user_id, token):
                                 vk.messages.send(peer_id=peer_id, message=random.choice(NEG_LINES), reply_to=message_id, random_id=random.randint(1, 1000000))
                             except: pass
 
+                        # ИСПРАВЛЕНО: Теперь этот блок стабильно получает cmid и ставит реакцию
                         if from_id in account_reactions.get(user_id, {}) and cmid:
                             try: 
-                                vk.messages.sendReaction(peer_id=peer_id, conversation_message_id=cmid, reaction_id=account_reactions[user_id][from_id])
+                                time.sleep(0.3)  # Небольшая пауза для корректных лимитов VK
+                                vk.messages.sendReaction(
+                                    peer_id=peer_id, 
+                                    conversation_message_id=cmid, 
+                                    reaction_id=account_reactions[user_id][from_id]
+                                )
                             except Exception as e: 
-                                print(f"Ошибка авто-реакции: {e}")
+                                print(f"Отказ отправки авто-реакции в VK: {e}")
 
                     # --- ОБРАБОТКА КОМАНД СЕЛФ-БОТА ---
                     if event.from_me and text.startswith("/"):
@@ -181,7 +190,7 @@ def user_longpoll_loop(user_id, token):
                                     
                                     vk.messages.edit(peer_id=peer_id, message_id=message_id, message="⏳ Проверяю и настраиваю выделенный поток...")
                                     
-                                    temp_session = vk_api.VkApi(token=token_arg)
+                                    temp_session = vk_api.VkApi(token=token_arg, api_version='5.131')
                                     temp_vk = temp_session.get_api()
                                     temp_info = temp_vk.users.get()[0]
                                     new_id = temp_info['id']
@@ -237,7 +246,7 @@ def user_longpoll_loop(user_id, token):
                                 continue
 
                         # Ограничение админ-команд
-                        if text.startswith(("/кик", "/спам", "/негатив", "/унегатив", "/клон", "/уклон", "/реакция", "/стопреакция", "/опубликовать", "/группы", "/игнор", "/уигнор", "/пригласить")):
+                        if text.startswith(("/кик", "/спам", "/негатив", "/унегатив", "/клон", "/уклон", "/реакция", "/стопреакция", "/опубликовать", "/группы", "/игнор", "/уигнор", "/пригласить"))):
                             if role not in ["owner", "admin"]:
                                 try: vk.messages.edit(peer_id=peer_id, message_id=message_id, message="⚠️ Недостаточно прав! Нужен статус Администратора.")
                                 except: pass
@@ -511,7 +520,7 @@ def user_longpoll_loop(user_id, token):
 
                         elif text.startswith("/спам"):
                             try:
-                                parts = text.strip().split(" ")
+                                parts = text.split()
                                 if len(parts) >= 2 and parts[-1].isdigit():
                                     count = int(parts[-1])
                                     s_text = " ".join(parts[1:-1])
@@ -528,17 +537,21 @@ def user_longpoll_loop(user_id, token):
                                 print(f"Ошибка в спаме: {e}")
                             continue
 
+                        # ИСПРАВЛЕНО: Безопасный разбор аргументов команды реакции
                         elif text.startswith("/реакция"):
                             t_id = get_target_id(text, msg_info, vk)
                             if t_id:
-                                parts = text.strip().split(" ")
-                                r_id = 1
-                                if len(parts) > 1 and parts[-1].isdigit():
+                                parts = text.split()
+                                r_id = 1  # По умолчанию лайк (ID: 1)
+                                if len(parts) >= 2 and parts[-1].isdigit():
                                     r_id = int(parts[-1])
                                     
                                 if user_id not in account_reactions: account_reactions[user_id] = {}
                                 account_reactions[user_id][t_id] = r_id
-                                try: vk.messages.edit(peer_id=peer_id, message_id=message_id, message=f"✅ Твоя авто-реакция {r_id} задана!")
+                                try: vk.messages.edit(peer_id=peer_id, message_id=message_id, message=f"✅ Авто-реакция {r_id} для id{t_id} успешно задана!")
+                                except: pass
+                            else:
+                                try: vk.messages.edit(peer_id=peer_id, message_id=message_id, message="⚠️ Кого оценивать? Ответь на сообщение или укажи [id|упоминание].")
                                 except: pass
                             continue
 
@@ -557,7 +570,7 @@ def user_longpoll_loop(user_id, token):
 def main():
     global connected_users
     
-    owner_session = vk_api.VkApi(token=USER_TOKEN)
+    owner_session = vk_api.VkApi(token=USER_TOKEN, api_version='5.131')
     connected_users[MY_USER_ID] = {"token": USER_TOKEN, "role": "owner", "api": owner_session.get_api()}
     
     if os.path.exists(TOKEN_FILE):
@@ -569,7 +582,7 @@ def main():
                     connected_users[uid] = {
                         "token": udata["token"],
                         "role": udata["role"],
-                        "api": vk_api.VkApi(token=udata["token"]).get_api()
+                        "api": vk_api.VkApi(token=udata["token"], api_version='5.131').get_api()
                     }
             print(f"📋 Загружено сохраненных профилей из базы: {len(data)} шт.")
         except Exception as e:

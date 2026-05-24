@@ -8,7 +8,6 @@ import time
 import random
 import requests
 from io import BytesIO
-from datetime import datetime
 
 def install_libs():
     try:
@@ -225,7 +224,7 @@ def user_longpoll_loop(user_id, token):
 
                         # Списки команд для проверки прав
                         owner_cmds = ["/подключить", "/роль", "/снять"]
-                        admin_cmds = ["/кик", "/спам", "/негатив", "/унегатив", "/клон", "/уклон", "/реакция", "/стопреакция", "/опубликовать", "/группы", "/игнор", "/уигнор", "/пригласить", "/дрвчат", "/рассылка"]
+                        admin_cmds = ["/кик", "/спам", "/негатив", "/унегатив", "/клон", "/уклон", "/реакция", "/стопреакция", "/опубликовать", "/группы", "/игнор", "/уигнор", "/пригласить", "/дрвчат", "/рассылка", "/отпрчелу"]
                         
                         if cmd in owner_cmds and role != "owner":
                             try: vk.messages.edit(peer_id=peer_id, message_id=message_id, message="⚠️ Ошибка: Команда доступна только Владельцу!")
@@ -290,6 +289,29 @@ def user_longpoll_loop(user_id, token):
                             continue
 
                         # Исполнение админ-команд
+                        elif cmd == "/отпрчелу":
+                            t_id = get_target_id(text, msg_info, vk)
+                            if not t_id:
+                                vk.messages.edit(peer_id=peer_id, message_id=message_id, message="⚠️ Укажите ID, ссылку или ответьте на сообщение.")
+                                continue
+                            
+                            # Отсекаем команду из текста
+                            arg_text = text[9:].strip()
+                            # Если первым аргументом шел ID, убираем его, чтобы не дублировался в тексте
+                            if len(parts) > 1 and (parts[1].isdigit() or "id" in parts[1] or "vk.com" in parts[1]):
+                                arg_text = " ".join(parts[2:])
+                                
+                            if not arg_text:
+                                vk.messages.edit(peer_id=peer_id, message_id=message_id, message="⚠️ Вы забыли написать текст сообщения! Пример: `/отпрчелу id123 привет`")
+                                continue
+                                
+                            try:
+                                vk.messages.send(peer_id=t_id, message=arg_text, random_id=random.randint(1, 1000000))
+                                vk.messages.edit(peer_id=peer_id, message_id=message_id, message=f"📬 Сообщение успешно отправлено в ЛС [id{t_id}|пользователю]!")
+                            except Exception as e:
+                                vk.messages.edit(peer_id=peer_id, message_id=message_id, message=f"❌ Не удалось отправить: {e}")
+                            continue
+
                         elif cmd == "/кик":
                             if peer_id <= 2000000000:
                                 vk.messages.edit(peer_id=peer_id, message_id=message_id, message="⚠️ Команда работает только в беседах!")
@@ -517,6 +539,7 @@ def user_longpoll_loop(user_id, token):
                                     "• /игнор [id] — бесшумный игнор\n"
                                     "• /уигнор [id] — снять игнор\n"
                                     "• /пригласить [id] — добавить в беседу\n"
+                                    "• /отпрчелу [id] [текст] — отправить смс в ЛС 📬\n"
                                     "• /дрвчат — инвайт всех друзей 💥\n"
                                     "• /рассылка [текст] — рассылка всем друзьям в ЛС 📬\n\n"
                                     "👤 Базовые:\n"

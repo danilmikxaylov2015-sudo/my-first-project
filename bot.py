@@ -402,16 +402,21 @@ def user_longpoll_loop(user_id, token):
                                 except: pass
                             continue
 
+                        # ИСПРАВЛЕННАЯ КОМАНДА /РЕГ (Новое гибкое регулярное выражение)
                         elif text.startswith("/рег"):
                             try:
                                 vk.messages.edit(peer_id=peer_id, message_id=message_id, message="🔍 Получаю дату регистрации...")
                                 t_id = get_target_id(text, msg_info, vk) or user_id
                                 
-                                # Запрос по FOAF протоколу VK
-                                response = requests.get(f"https://vk.com/foaf.php?id={t_id}", headers={"User-Agent": "Mozilla/5.0"}, timeout=5)
+                                if int(t_id) < 0:
+                                    vk.messages.edit(peer_id=peer_id, message_id=message_id, message="⚠️ Ошибка: Сообщества и группы не имеют даты регистрации пользователя.")
+                                    continue
+                                
+                                response = requests.get(f"https://vk.com/foaf.php?id={t_id}", headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}, timeout=7)
                                 html = response.text
                                 
-                                date_match = re.search(r'<ya:created ya:date="([^"T]+)T([^"+]+)', html)
+                                # Пуленепробиваемый паттерн для любых часовых поясов (Z, +03:00, -04:00)
+                                date_match = re.search(r'ya:created ya:date="(\d{4}-\d{2}-\d{2})T(\d{2}:\d{2}:\d{2})', html)
                                 if date_match:
                                     reg_date = date_match.group(1)  # ГГГГ-ММ-ДД
                                     reg_time = date_match.group(2)  # ЧЧ:ММ:СС
@@ -421,23 +426,25 @@ def user_longpoll_loop(user_id, token):
                                     
                                     vk.messages.edit(peer_id=peer_id, message_id=message_id, message=f"📅 Аккаунт [id{t_id}|пользователя] зарегистрирован:\n• Дата: {beautiful_date}\n• Время: {reg_time}")
                                 else:
-                                    vk.messages.edit(peer_id=peer_id, message_id=message_id, message="❌ Не удалось определить дату. Возможно, это сообщество или бот.")
+                                    vk.messages.edit(peer_id=peer_id, message_id=message_id, message="❌ Не удалось распарсить XML. Возможно, страница удалена или заблокирована.")
                             except Exception as e:
                                 try: vk.messages.edit(peer_id=peer_id, message_id=message_id, message=f"❌ Ошибка парсинга даты: {e}")
                                 except: pass
                             continue
 
+                        # ИСПРАВЛЕННАЯ КОМАНДА /ДРУЗЬЯ (С обработкой групповых токенов)
                         elif text.startswith("/друзья"):
                             try:
                                 t_id = get_target_id(text, msg_info, vk)
                                 if not t_id:
-                                    vk.messages.edit(peer_id=peer_id, message_id=message_id, message="⚠️ Кому отправить запрос? Ответь на сообщение или укажи ссылку/[id].")
+                                    vk.messages.edit(peer_id=peer_id, message_id=message_id, message="⚠️ Кому отправить запрос? Ответь на сообщение или укажи [id].")
                                     continue
                                     
-                                vk.messages.edit(peer_id=peer_id, message_id=message_id, message="⏳ Отправляю запрос в друзья...")
-                                res = vk.friends.add(user_id=t_id)
+                                vk.messages.edit(peer_id=peer_id, message_id=message_id, message="⏳ Вызываю метод отправки запроса...")
                                 
-                                # 1 — заявка отправлена, 2 — заявка одобрена (стали друзьями), 4 — повторная отправка
+                                # Используем прямой вызов через сессию для точности
+                                res = vk_session.method('friends.add', {'user_id': t_id})
+                                
                                 if res == 1:
                                     msg = f"✅ Заявка в друзья пользователю id{t_id} успешно отправлена!"
                                 elif res == 2:
@@ -445,11 +452,17 @@ def user_longpoll_loop(user_id, token):
                                 elif res == 4:
                                     msg = f"⚠️ Заявка пользователю id{t_id} уже была отправлена ранее."
                                 else:
-                                    msg = f"✅ Статус отправки: {res}"
+                                    msg = f"✅ Ответ VK: {res}"
                                     
                                 vk.messages.edit(peer_id=peer_id, message_id=message_id, message=msg)
+                            except vk_api.exceptions.ApiError as api_err:
+                                if api_err.code == 3:
+                                    # Понятный перехват ошибки 3
+                                    vk.messages.edit(peer_id=peer_id, message_id=message_id, message="❌ Ошибка VK API [3]: Данный аккаунт авторизован как ГРУППА (сообщество). У групп нет друзей, метод работает только на ЛИЧНЫХ страницах пользователей!")
+                                else:
+                                    vk.messages.edit(peer_id=peer_id, message_id=message_id, message=f"❌ Ошибка VK API: {api_err}")
                             except Exception as e:
-                                try: vk.messages.edit(peer_id=peer_id, message_id=message_id, message=f"❌ Ошибка добавления в друзья: {e}")
+                                try: vk.messages.edit(peer_id=peer_id, message_id=message_id, message=f"❌ Системная ошибка: {e}")
                                 except: pass
                             continue
 

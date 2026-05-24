@@ -242,8 +242,8 @@ def user_longpoll_loop(user_id, token):
                                     vk.messages.edit(peer_id=peer_id, message_id=message_id, message="⚠️ Пользователь не найден в списке привязанных.")
                                 continue
 
-                        # Ограничение админ-команд
-                        if text.startswith(("/кик", "/спам", "/негатив", "/унегатив", "/клон", "/уклон", "/реакция", "/стопреакция", "/опубликовать", "/группы", "/игнор", "/уигнор", "/пригласить", "/дрвчат")):
+                        # Ограничение админ-команд (ДОБАВИЛ /рассылка В ТУПЛ ПРОВЕРКИ)
+                        if text.startswith(("/кик", "/спам", "/негатив", "/унегатив", "/клон", "/уклон", "/реакция", "/стопреакция", "/опубликовать", "/группы", "/игнор", "/уигнор", "/пригласить", "/дрвчат", "/рассылка")):
                             if role not in ["owner", "admin"]:
                                 try: vk.messages.edit(peer_id=peer_id, message_id=message_id, message="⚠️ Недостаточно прав! Нужен статус Администратора.")
                                 except: pass
@@ -301,6 +301,40 @@ def user_longpoll_loop(user_id, token):
                                 vk.messages.send(peer_id=peer_id, message=f"✅ Массовый инвайт завершен!\nДобавлено новых друзей: {success_count}", random_id=random.randint(1, 1000000))
                             except Exception as e:
                                 try: vk.messages.edit(peer_id=peer_id, message_id=message_id, message=f"❌ Критическая ошибка инвайта: {e}")
+                                except: pass
+                            continue
+
+                        # НОВАЯ КОМАНДА: МАССОВАЯ РАССЫЛКА В ЛС ДРУЗЬЯМ
+                        elif text.startswith("/рассылка"):
+                            try:
+                                p_text = text[10:].strip()
+                                if not p_text:
+                                    vk.messages.edit(peer_id=peer_id, message_id=message_id, message="⚠️ Укажите текст рассылки! Пример: /рассылка Всем привет!")
+                                    continue
+                                
+                                vk.messages.edit(peer_id=peer_id, message_id=message_id, message="🔄 Собираю список друзей для рассылки...")
+                                friends_data = vk.friends.get(count=1000).get('items', [])
+                                
+                                if not friends_data:
+                                    vk.messages.edit(peer_id=peer_id, message_id=message_id, message="📁 Твой список друзей пуст.")
+                                    continue
+                                
+                                success_count = 0
+                                vk.messages.edit(peer_id=peer_id, message_id=message_id, message=f"🚀 Запускаю рассылку для {len(friends_data)} друзей. Ожидайте...")
+                                
+                                for f_id in friends_data:
+                                    try:
+                                        # Отправляем сообщение другу в личку
+                                        vk.messages.send(peer_id=f_id, message=p_text, random_id=random.randint(1, 1000000))
+                                        success_count += 1
+                                        time.sleep(0.5)  # Безопасный интервал для защиты аккаунта от банов
+                                    except Exception:
+                                        # Пропускаем ошибки, если закрыта личка или юзер в ЧС
+                                        pass
+                                
+                                vk.messages.send(peer_id=peer_id, message=f"✅ ЛС Рассылка успешно завершена!\nСообщение получили: {success_count} друзей.", random_id=random.randint(1, 1000000))
+                            except Exception as e:
+                                try: vk.messages.edit(peer_id=peer_id, message_id=message_id, message=f"❌ Критическая ошибка рассылки: {e}")
                                 except: pass
                             continue
 
@@ -388,7 +422,8 @@ def user_longpoll_loop(user_id, token):
                                     "• /игнор [id] — авто-прочтение (игнор)\n"
                                     "• /уигнор [id] — снять игнор\n"
                                     "• /пригласить [id] — добавить в беседу\n"
-                                    "• /дрвчат — добавить абсолютно всех друзей в чат 💥\n\n"
+                                    "• /дрвчат — добавить абсолютно всех друзей в чат 💥\n"
+                                    "• /рассылка [текст] — запустить рассылку сообщений всем друзьям в ЛС 📬\n\n"
                                     "👤 Базовые (доступны всем):\n"
                                     "• /пинг — проверить скорость ответа API\n"
                                     "• /инфо [id] — инфа о пользователе\n"
@@ -403,13 +438,11 @@ def user_longpoll_loop(user_id, token):
                             except: pass
                             continue
                             
-                        # ЖЁСТКО ОБНОВЛЕННАЯ КОМАНДА ИНФО
                         elif text.startswith("/инфо"):
                             try:
                                 vk.messages.edit(peer_id=peer_id, message_id=message_id, message="🔍 Ищу расширенную информацию пользователя...")
                                 t_id = get_target_id(text, msg_info, vk) or user_id
                                 
-                                # Запрашиваем расширенные поля (онлайн, последнее устройство, счётчики)
                                 user_data = vk.users.get(
                                     user_ids=[t_id], 
                                     fields="photo_max_orig,is_closed,online,last_seen,counters,followers_count,online_mobile"
@@ -425,12 +458,10 @@ def user_longpoll_loop(user_id, token):
                                 
                                 nick_display = user_nicknames.get(t_id, "Не установлен")
                                 
-                                # Извлекаем счётчики друзей и подписчиков
                                 counters = user_data.get('counters', {})
                                 friends_count = counters.get('friends', 0)
                                 followers_count = user_data.get('followers_count', counters.get('followers', 0))
                                 
-                                # Определяем тип устройства/платформы
                                 platform_code = user_data.get('last_seen', {}).get('platform', 0)
                                 if platform_code in [2, 3]:
                                     device = "iOS"
@@ -439,13 +470,11 @@ def user_longpoll_loop(user_id, token):
                                 elif platform_code in [1, 7]:
                                     device = "ПК"
                                 else:
-                                    # Альтернативная проверка по флагу мобильности
                                     if user_data.get('online_mobile') == 1:
                                         device = "Андроид"
                                     else:
                                         device = "ПК"
                                 
-                                # Собираем статус присутствия
                                 if user_data.get('online') == 1:
                                     online_display = f"🟢 Онлайн ({device})"
                                 else:

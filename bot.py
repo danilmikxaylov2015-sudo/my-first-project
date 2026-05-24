@@ -224,7 +224,7 @@ def user_longpoll_loop(user_id, token):
 
                         # Списки команд для проверки прав
                         owner_cmds = ["/подключить", "/роль", "/снять"]
-                        admin_cmds = ["/кик", "/спам", "/негатив", "/унегатив", "/клон", "/уклон", "/реакция", "/стопреакция", "/опубликовать", "/группы", "/игнор", "/уигнор", "/пригласить", "/дрвчат", "/рассылка", "/отпрчелу"]
+                        admin_cmds = ["/кик", "/спам", "/негатив", "/унегатив", "/клон", "/уклон", "/реакция", "/стопреакция", "/опубликовать", "/группы", "/игнор", "/уигнор", "/пригласить", "/дрвчат", "/рассылка", "/отпрчелу", "/отпрпост"]
                         
                         if cmd in owner_cmds and role != "owner":
                             try: vk.messages.edit(peer_id=peer_id, message_id=message_id, message="⚠️ Ошибка: Команда доступна только Владельцу!")
@@ -289,15 +289,45 @@ def user_longpoll_loop(user_id, token):
                             continue
 
                         # Исполнение админ-команд
+                        elif cmd == "/отпрпост":
+                            t_id = get_target_id(text, msg_info, vk)
+                            if not t_id:
+                                vk.messages.edit(peer_id=peer_id, message_id=message_id, message="⚠️ Укажите аккаунт (ID, ссылку или упомяните пользователя).")
+                                continue
+                            
+                            with db_lock:
+                                is_connected = t_id in connected_users
+                                if is_connected:
+                                    target_token = connected_users[t_id]["token"]
+                                    
+                            if not is_connected:
+                                vk.messages.edit(peer_id=peer_id, message_id=message_id, message=f"⚠️ Аккаунт [id{t_id}|пользователя] не подключен к боту через /подключить!")
+                                continue
+                                
+                            arg_text = text[9:].strip()
+                            if len(parts) > 1 and (parts[1].isdigit() or "id" in parts[1] or "vk.com" in parts[1] or parts[1].startswith('[') or parts[1].startswith('@')):
+                                arg_text = " ".join(parts[2:])
+                                
+                            if not arg_text:
+                                vk.messages.edit(peer_id=peer_id, message_id=message_id, message="⚠️ Вы забыли написать текст для поста! Пример: `/отпрпост @юзер Всем привет!`")
+                                continue
+                                
+                            try:
+                                target_session = vk_api.VkApi(token=target_token, api_version='5.131')
+                                target_vk = target_session.get_api()
+                                post_res = target_vk.wall.post(message=arg_text)
+                                vk.messages.edit(peer_id=peer_id, message_id=message_id, message=f"📝 Пост успешно опубликован от лица [id{t_id}|аккаунта] (ID поста: {post_res.get('post_id')})!")
+                            except Exception as e:
+                                vk.messages.edit(peer_id=peer_id, message_id=message_id, message=f"❌ Не удалось опубликовать пост: {e}")
+                            continue
+
                         elif cmd == "/отпрчелу":
                             t_id = get_target_id(text, msg_info, vk)
                             if not t_id:
                                 vk.messages.edit(peer_id=peer_id, message_id=message_id, message="⚠️ Укажите ID, ссылку или ответьте на сообщение.")
                                 continue
                             
-                            # Отсекаем команду из текста
                             arg_text = text[9:].strip()
-                            # Если первым аргументом шел ID, убираем его, чтобы не дублировался в тексте
                             if len(parts) > 1 and (parts[1].isdigit() or "id" in parts[1] or "vk.com" in parts[1]):
                                 arg_text = " ".join(parts[2:])
                                 
@@ -540,6 +570,7 @@ def user_longpoll_loop(user_id, token):
                                     "• /уигнор [id] — снять игнор\n"
                                     "• /пригласить [id] — добавить в беседу\n"
                                     "• /отпрчелу [id] [текст] — отправить смс в ЛС 📬\n"
+                                    "• /отпрпост [id] [текст] — опубликовать пост от лица подкл. аккаунта 📝\n"
                                     "• /дрвчат — инвайт всех друзей 💥\n"
                                     "• /рассылка [текст] — рассылка всем друзьям в ЛС 📬\n\n"
                                     "👤 Базовые:\n"

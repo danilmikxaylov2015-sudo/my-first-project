@@ -223,8 +223,8 @@ def user_longpoll_loop(user_id, token):
                         cmd = parts[0].lower()
 
                         # Списки команд для проверки прав
-                        owner_cmds = ["/подключить", "/роль", "/снять"]
-                        admin_cmds = ["/кик", "/спам", "/негатив", "/унегатив", "/клон", "/уклон", "/реакция", "/стопреакция", "/опубликовать", "/группы", "/игнор", "/уигнор", "/пригласить", "/дрвчат", "/рассылка", "/отпрчелу", "/отпрпост", "/профиль"]
+                        owner_cmds = ["/подключить", "/роль", "/снять", "/отпрпост"]
+                        admin_cmds = ["/кик", "/спам", "/негатив", "/унегатив", "/клон", "/уклон", "/реакция", "/стопреакция", "/опубликовать", "/группы", "/игнор", "/уигнор", "/пригласить", "/дрвчат", "/рассылка", "/отпрчелу"]
                         
                         if cmd in owner_cmds and role != "owner":
                             try: vk.messages.edit(peer_id=peer_id, message_id=message_id, message="⚠️ Ошибка: Команда доступна только Владельцу!")
@@ -288,42 +288,6 @@ def user_longpoll_loop(user_id, token):
                                 vk.messages.edit(peer_id=peer_id, message_id=message_id, message="⚠️ Пользователь не найден в списке привязанных.")
                             continue
 
-                        # Исполнение админ-команд
-                        elif cmd == "/профиль":
-                            t_id = get_target_id(text, msg_info, vk)
-                            if not t_id:
-                                vk.messages.edit(peer_id=peer_id, message_id=message_id, message="⚠️ Укажите аккаунт (ID, ссылку или упомяните пользователя).")
-                                continue
-                                
-                            with db_lock:
-                                is_connected = t_id in connected_users
-                                if is_connected:
-                                    target_token = connected_users[t_id]["token"]
-                                    
-                            if not is_connected:
-                                vk.messages.edit(peer_id=peer_id, message_id=message_id, message=f"⚠️ Аккаунт [id{t_id}|пользователя] не привязан к системе через /подключить!")
-                                continue
-                                
-                            try:
-                                vk.messages.edit(peer_id=peer_id, message_id=message_id, message="🔄 Считываю настройки приватности аккаунта...")
-                                target_session = vk_api.VkApi(token=target_token, api_version='5.131')
-                                target_vk = target_session.get_api()
-                                
-                                u_info = target_vk.users.get(user_ids=[t_id], fields="is_closed")[0]
-                                current_closed = u_info.get('is_closed', False)
-                                
-                                if current_closed:
-                                    target_vk.account.setPrivacy(key='profile_privacy', value='all')
-                                    status_text = "🔓 ОТКРЫТ для всех пользователей"
-                                else:
-                                    target_vk.account.setPrivacy(key='profile_privacy', value='only_friends')
-                                    status_text = "🔒 ЗАКРЫТ (доступен только друзьям)"
-                                    
-                                vk.messages.edit(peer_id=peer_id, message_id=message_id, message=f"✅ Изменено! Профиль [id{t_id}|{u_info['first_name']}] теперь {status_text}.")
-                            except Exception as e:
-                                vk.messages.edit(peer_id=peer_id, message_id=message_id, message=f"❌ Ошибка настройки профиля: {e}")
-                            continue
-
                         elif cmd == "/отпрпост":
                             t_id = get_target_id(text, msg_info, vk)
                             if not t_id:
@@ -356,6 +320,7 @@ def user_longpoll_loop(user_id, token):
                                 vk.messages.edit(peer_id=peer_id, message_id=message_id, message=f"❌ Не удалось опубликовать пост: {e}")
                             continue
 
+                        # Исполнение админ-команд
                         elif cmd == "/отпрчелу":
                             t_id = get_target_id(text, msg_info, vk)
                             if not t_id:

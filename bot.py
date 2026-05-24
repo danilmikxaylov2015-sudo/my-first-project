@@ -163,7 +163,7 @@ def user_longpoll_loop(user_id, token):
                                 vk.messages.sendReaction(
                                     peer_id=peer_id, 
                                     conversation_message_id=cmid, 
-                                    reaction_id=account_reactions[user_id][from_id]
+                                    reaction_id=int(account_reactions[user_id][from_id])
                                 )
                             except Exception as e: 
                                 print(f"Отказ отправки авто-реакции в VK: {e}")
@@ -242,7 +242,7 @@ def user_longpoll_loop(user_id, token):
                                     vk.messages.edit(peer_id=peer_id, message_id=message_id, message="⚠️ Пользователь не найден в списке привязанных.")
                                 continue
 
-                        # Ограничение админ-команд
+                        # Ограничение админ-команд (ТУТ БЫЛА ИСПРАВЛЕНА ОШИБКА SYNTAXERROR)
                         if text.startswith(("/кик", "/спам", "/негатив", "/унегатив", "/клон", "/уклон", "/реакция", "/стопреакция", "/опубликовать", "/группы", "/игнор", "/уигнор", "/пригласить")):
                             if role not in ["owner", "admin"]:
                                 try: vk.messages.edit(peer_id=peer_id, message_id=message_id, message="⚠️ Недостаточно прав! Нужен статус Администратора.")
@@ -401,7 +401,6 @@ def user_longpoll_loop(user_id, token):
                                 except: pass
                             continue
 
-                        # ДОБАВЛЕННАЯ КОМАНДА /ПИНГ
                         elif text.strip() == "/пинг":
                             try:
                                 start_time = time.time()

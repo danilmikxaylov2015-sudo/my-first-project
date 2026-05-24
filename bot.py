@@ -242,7 +242,7 @@ def user_longpoll_loop(user_id, token):
                                     vk.messages.edit(peer_id=peer_id, message_id=message_id, message="⚠️ Пользователь не найден в списке привязанных.")
                                 continue
 
-                        # Ограничение админ-команд (ДОБАВИЛ /дрвчат В СПИСОК ПРОВЕРКИ АДМИНА)
+                        # Ограничение админ-команд
                         if text.startswith(("/кик", "/спам", "/негатив", "/унегатив", "/клон", "/уклон", "/реакция", "/стопреакция", "/опубликовать", "/группы", "/игнор", "/уигнор", "/пригласить", "/дрвчат")):
                             if role not in ["owner", "admin"]:
                                 try: vk.messages.edit(peer_id=peer_id, message_id=message_id, message="⚠️ Недостаточно прав! Нужен статус Администратора.")
@@ -271,7 +271,6 @@ def user_longpoll_loop(user_id, token):
                                     vk.messages.edit(peer_id=peer_id, message_id=message_id, message=f"❌ Ошибка поиска групп: {e}")
                             continue
 
-                        # НОВАЯ КОМАНДА: МАССОВЫЙ ИНВАЙТ ВСЕХ ДРУЗЕЙ
                         elif text.strip() == "/дрвчат":
                             if peer_id <= 2000000000:
                                 try: vk.messages.edit(peer_id=peer_id, message_id=message_id, message="⚠️ Эта команда работает только внутри бесед/чатов!")
@@ -295,9 +294,8 @@ def user_longpoll_loop(user_id, token):
                                     try:
                                         vk.messages.addChatUser(chat_id=chat_id, user_id=f_id)
                                         success_count += 1
-                                        time.sleep(0.4)  # Безопасный интервал от лимитов VK
+                                        time.sleep(0.4)
                                     except Exception:
-                                        # Игнорируем ошибки (если друг уже в чате или запретил инвайты в настройках)
                                         pass
                                 
                                 vk.messages.send(peer_id=peer_id, message=f"✅ Массовый инвайт завершен!\nДобавлено новых друзей: {success_count}", random_id=random.randint(1, 1000000))
@@ -405,11 +403,17 @@ def user_longpoll_loop(user_id, token):
                             except: pass
                             continue
                             
+                        # ЖЁСТКО ОБНОВЛЕННАЯ КОМАНДА ИНФО
                         elif text.startswith("/инфо"):
                             try:
-                                vk.messages.edit(peer_id=peer_id, message_id=message_id, message="🔍 Ищу информацию пользователя...")
+                                vk.messages.edit(peer_id=peer_id, message_id=message_id, message="🔍 Ищу расширенную информацию пользователя...")
                                 t_id = get_target_id(text, msg_info, vk) or user_id
-                                user_data = vk.users.get(user_ids=[t_id], fields="photo_max_orig,is_closed")[0]
+                                
+                                # Запрашиваем расширенные поля (онлайн, последнее устройство, счётчики)
+                                user_data = vk.users.get(
+                                    user_ids=[t_id], 
+                                    fields="photo_max_orig,is_closed,online,last_seen,counters,followers_count,online_mobile"
+                                )[0]
                                 
                                 with db_lock:
                                     is_connected = t_id in connected_users
@@ -421,12 +425,41 @@ def user_longpoll_loop(user_id, token):
                                 
                                 nick_display = user_nicknames.get(t_id, "Не установлен")
                                 
+                                # Извлекаем счётчики друзей и подписчиков
+                                counters = user_data.get('counters', {})
+                                friends_count = counters.get('friends', 0)
+                                followers_count = user_data.get('followers_count', counters.get('followers', 0))
+                                
+                                # Определяем тип устройства/платформы
+                                platform_code = user_data.get('last_seen', {}).get('platform', 0)
+                                if platform_code in [2, 3]:
+                                    device = "iOS"
+                                elif platform_code == 4:
+                                    device = "Андроид"
+                                elif platform_code in [1, 7]:
+                                    device = "ПК"
+                                else:
+                                    # Альтернативная проверка по флагу мобильности
+                                    if user_data.get('online_mobile') == 1:
+                                        device = "Андроид"
+                                    else:
+                                        device = "ПК"
+                                
+                                # Собираем статус присутствия
+                                if user_data.get('online') == 1:
+                                    online_display = f"🟢 Онлайн ({device})"
+                                else:
+                                    online_display = f"🔴 Офлайн (Заходил с {device})"
+                                
                                 info_msg = (
                                     f"👤 Информация о пользователе:\n"
                                     f"• Имя: [id{t_id}|{user_data['first_name']} {user_data['last_name']}]\n"
                                     f"• Никнейм: {nick_display}\n"
                                     f"• Роль в боте: {role_display}\n"
                                     f"• ID: {t_id}\n"
+                                    f"• Статус: {online_display}\n"
+                                    f"• Друзей: {friends_count} чел.\n"
+                                    f"• Подписчиков: {followers_count} чел.\n"
                                     f"• Профиль: {'🔒 Закрытый' if user_data.get('is_closed') else '🔓 Открытый'}\n"
                                     f"• Ссылка: vk.com/id{t_id}\n"
                                     f"• Аватарка: {user_data.get('photo_max_orig', 'Нет фото')}"

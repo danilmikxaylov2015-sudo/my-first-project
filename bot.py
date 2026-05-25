@@ -35,6 +35,7 @@ account_reactions = {}
 account_negatives = {}  
 account_clones = {}     
 account_ignores = {}    
+account_pr = {}         # База активного ежеминутного пиара
 user_nicknames = {}    
 connected_users = {}
 active_threads = {}
@@ -47,10 +48,10 @@ NEG_LINES = [
     "Ебать ты сказочный дегенерат, конечно. Как ты вообще до клавиатуры дополз?",
     "Блядь, закрой рот, из него слишком сильно несёт тупостью.",
     "Ты че, сука, бессмертный или просто реально отбитый наглухо? Потеряйся нахуй.",
-    "Твой высер даже читать западло. Забейся в угол и не отсвечивай, чучело.",
+    "Твой высер even читать западло. Забейся в угол и не отсвечивай, чучело.",
     "Ебало стяни, пока тебе его тут окончательно не завалили, говноед. 🤡",
     "Какого хуя ты вообще решил, что твоё мнение кого-то волнует? Свали в туман.",
-    "Ты настолько тупой, что это even не смешно. Иди нахуй и не трать чужое время."
+    "Ты настолько тупой, что это даже не смешно. Иди нахуй и не трать чужое время."
 ]
 
 def save_connected_users():
@@ -139,6 +140,27 @@ def generate_quote_image(avatar_url, author_name, quote_text):
     output.seek(0)
     return output
 
+# Фоновый воркер для ежеминутной отправки пиара
+def pr_loop(user_id, peer_id, token, pr_text):
+    try:
+        vk_session = vk_api.VkApi(token=token, api_version='5.131')
+        vk = vk_session.get_api()
+    except:
+        return
+        
+    while True:
+        with db_lock:
+            # Если текст изменился или команда была остановлена — тушим поток
+            if account_pr.get((user_id, peer_id)) != pr_text:
+                break
+        try:
+            vk.messages.send(peer_id=peer_id, message=pr_text, random_id=random.randint(1, 1000000))
+        except Exception as e:
+            print(f"Ошибка выполнения пиара для ID {user_id} в чате {peer_id}: {e}")
+            break # При критической ошибке (кик из чата/бан токена) останавливаемся
+            
+        time.sleep(60)
+
 def user_longpoll_loop(user_id, token):
     print(f"🌟 Запущен персональный LongPoll-поток для ID {user_id}")
     
@@ -224,7 +246,7 @@ def user_longpoll_loop(user_id, token):
                         cmd = parts[0].lower()
 
                         owner_cmds = ["/подключить", "/роль", "/снять", "/отпрпост"]
-                        admin_cmds = ["/кик", "/спам", "/негатив", "/унегатив", "/клон", "/уклон", "/реакция", "/стопреакция", "/опубликовать", "/группы", "/игнор", "/уигнор", "/пригласить", "/дрвчат", "/рассылка", "/отпрчелу"]
+                        admin_cmds = ["/кик", "/спам", "/негатив", "/унегатив", "/клон", "/уклон", "/реакция", "/стопреакция", "/опубликовать", "/группы", "/игнор", "/уигнор", "/пригласить", "/дрвчат", "/рассылка", "/отпрчелу", "/пиар", "/стоппиар"]
                         
                         if cmd in owner_cmds and role != "owner":
                             try: vk.messages.edit(peer_id=peer_id, message_id=message_id, message="⚠️ Ошибка: Команда доступна только Владельцу!")
@@ -321,6 +343,35 @@ def user_longpoll_loop(user_id, token):
                             continue
 
                         # Исполнение админ-команд
+                        elif cmd == "/пиар":
+                            pr_text_arg = text[5:].strip()
+                            if not pr_text_arg:
+                                try: vk.messages.edit(peer_id=peer_id, message_id=message_id, message="⚠️ Укажите текст для пиара! Пример: /пиар Продам гараж")
+                                except: pass
+                                continue
+                            
+                            with db_lock:
+                                account_pr[(user_id, peer_id)] = pr_text_arg
+                            
+                            # Запуск изолированного фонового потока рекламы
+                            t_pr = threading.Thread(target=pr_loop, args=(user_id, peer_id, token, pr_text_arg), daemon=True)
+                            t_pr.start()
+                            
+                            try: vk.messages.edit(peer_id=peer_id, message_id=message_id, message=f"🚀 Ежеминутный авто-пиар успешно запущен в этом чате!\n📝 Текст: {pr_text_arg}")
+                            except: pass
+                            continue
+
+                        elif cmd == "/стоппиар":
+                            with db_lock:
+                                if (user_id, peer_id) in account_pr:
+                                    del account_pr[(user_id, peer_id)]
+                                    res_msg = "🛑 Ежеминутный пиар успешно отключен в этом чате."
+                                else:
+                                    res_msg = "⚠️ Пиар-поток в этой беседе не был запущен."
+                            try: vk.messages.edit(peer_id=peer_id, message_id=message_id, message=res_msg)
+                            except: pass
+                            continue
+
                         elif cmd == "/отпрчелу":
                             t_id = get_target_id(text, msg_info, vk)
                             if not t_id:
@@ -558,6 +609,8 @@ def user_longpoll_loop(user_id, token):
                                     "🛡️ Администратор:\n"
                                     "• /кик [id] — удалить из беседы\n"
                                     "• /спам [текст] [кол-во] — заспамить чат\n"
+                                    "• /пиар [текст] — запустить ежеминутный пиар в чате 🚀\n"
+                                    "• /стоппиар — остановить текущий пиар в чате 🛑\n"
                                     "• /негатив [id] — авто-оскорбления\n"
                                     "• /унегатив [id] — убрать из негатива\n"
                                     "• /клон [id] — авто-клон\n"

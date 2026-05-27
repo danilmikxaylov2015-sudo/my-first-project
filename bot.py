@@ -48,7 +48,7 @@ NEG_LINES = [
     "Ебать ты сказочный дегенерат, конечно. Как ты вообще до клавиатуры дополз?",
     "Блядь, закрой рот, из него слишком сильно несёт тупостью.",
     "Ты че, сука, бессмертный или просто реально отбитый наглухо? Потеряйся нахуй.",
-    "Твой высер even читать западло. Забейся в угол и не отсвечивай, чучело.",
+    "Твой высер даже читать западло. Забейся в угол и не отсвечивай, чучело.",
     "Ебало стяни, пока тебе его тут окончательно не завалили, говноед. 🤡",
     "Какого хуя ты вообще решил, что твоё мнение кого-то волнует? Свали в туман.",
     "Ты настолько тупой, что это даже не смешно. Иди нахуй и не трать чужое время."
@@ -150,14 +150,13 @@ def pr_loop(user_id, peer_id, token, pr_text):
         
     while True:
         with db_lock:
-            # Если текст изменился или команда была остановлена — тушим поток
             if account_pr.get((user_id, peer_id)) != pr_text:
                 break
         try:
             vk.messages.send(peer_id=peer_id, message=pr_text, random_id=random.randint(1, 1000000))
         except Exception as e:
             print(f"Ошибка выполнения пиара для ID {user_id} в чате {peer_id}: {e}")
-            break # При критической ошибке (кик из чата/бан токена) останавливаемся
+            break 
             
         time.sleep(60)
 
@@ -353,7 +352,6 @@ def user_longpoll_loop(user_id, token):
                             with db_lock:
                                 account_pr[(user_id, peer_id)] = pr_text_arg
                             
-                            # Запуск изолированного фонового потока рекламы
                             t_pr = threading.Thread(target=pr_loop, args=(user_id, peer_id, token, pr_text_arg), daemon=True)
                             t_pr.start()
                             
@@ -547,7 +545,7 @@ def user_longpoll_loop(user_id, token):
                                     s_text = " ".join(parts[1:-1]) or "🤖"
                                     vk.messages.edit(peer_id=peer_id, message_id=message_id, message=f"🚀 Спамлю {count} раз...")
                                     for _ in range(count):
-                                        time.sleep(0.4)
+                                        time.sleep(0.9)  # ⏱️ Изменено с 0.4 на 0.9 сек
                                         vk.messages.send(peer_id=peer_id, message=s_text, random_id=random.randint(1,1000000))
                                 else:
                                     vk.messages.edit(peer_id=peer_id, message_id=message_id, message="⚠️ Пример: /спам текст 5")

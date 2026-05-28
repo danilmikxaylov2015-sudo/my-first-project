@@ -372,8 +372,20 @@ def user_longpoll_loop(user_id, token):
                                 with open(tmp_file, "rb") as f:
                                     upload_req = requests.post(upload_url, files={'file': (tmp_file, f, 'audio/mpeg')}).json()
                                     
-                                save_res = vk.docs.save(file=upload_req['file'])[0]
-                                attachment = f"doc{save_res['owner_id']}_{save_res['id']}"
+                                if 'file' not in upload_req:
+                                    raise Exception(f"Ошибка загрузки на сервер VK: {upload_req}")
+                                    
+                                save_res = vk.docs.save(file=upload_req['file'])
+                                
+                                # Робастный парсинг ответа (ВК возвращает словарь для аудиосообщений вместо списка)
+                                if isinstance(save_res, dict) and 'audio_message' in save_res:
+                                    doc_data = save_res['audio_message']
+                                elif isinstance(save_res, list) and len(save_res) > 0:
+                                    doc_data = save_res[0]
+                                else:
+                                    doc_data = save_res
+                                
+                                attachment = f"doc{doc_data['owner_id']}_{doc_data['id']}"
                                 
                                 # Сносим исходный триггер и отправляем ГС
                                 vk.messages.delete(message_ids=message_id, delete_for_all=1)
@@ -594,7 +606,7 @@ def user_longpoll_loop(user_id, token):
                                         time.sleep(0.9)  
                                         vk.messages.send(peer_id=peer_id, message=s_text, random_id=random.randint(1,1000000))
                                 else:
-                                    vk.messages.edit(peer_id=peer_id, message_id=message_id, message="⚠️ Пример: /спам текст 5")
+                                    vk.messages.edit(peer_id=peer_id, message_id=message_id, message="⚠️ Пример: /спам text 5")
                             except: pass
                             continue
 

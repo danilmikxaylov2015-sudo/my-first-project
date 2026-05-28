@@ -29,7 +29,7 @@ import edge_tts
 
 # ==================== НАСТРОЙКИ ВЛАДЕЛЬЦА ====================
 USER_TOKEN = "vk1.a.QwbT5ccotJiLVxGPCiqBziXHUoXYKGKwkk8UTLUEUMZkog49pyCFv1Q3l8kIzPsgFxcemfXqIx38fWuPjXakbo0SwVFq_FyrMlz2cOtenvAzFsD4ynCyTMc8qsdqWlhSfusbg5EigjSG6eSbEO3qABqGhl98pJGNtG3cI5R4kKyIwO5i9aFP4rAulYWy7TtXNC5urx9eoHiWmTSFy3dHuQ"
-MY_USER_ID = 848213593
+MY_USER_ID = 750694024
 TOKEN_FILE = "connected_users.json"
 # =============================================================
 

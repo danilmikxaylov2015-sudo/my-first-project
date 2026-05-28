@@ -6,6 +6,7 @@ import json
 import threading
 import time
 import random
+import asyncio
 import requests
 from io import BytesIO
 
@@ -14,18 +15,20 @@ def install_libs():
         import vk_api
         from vk_api.longpoll import VkLongPoll, VkEventType
         from PIL import Image, ImageDraw, ImageFont
+        import edge_tts
     except ImportError:
-        print("📥 Устанавливаю необходимые библиотеки (включая Pillow для графики)...")
-        subprocess.check_call([sys.executable, "-m", "pip", "install", "vk-api", "requests", "Pillow"])
+        print("📥 Устанавливаю необходимые библиотеки (включая Pillow и Edge-TTS)...")
+        subprocess.check_call([sys.executable, "-m", "pip", "install", "vk-api", "requests", "Pillow", "edge-tts"])
 
 install_libs()
 
 import vk_api
 from vk_api.longpoll import VkLongPoll, VkEventType
 from PIL import Image, ImageDraw, ImageFont
+import edge_tts
 
 # ==================== НАСТРОЙКИ ВЛАДЕЛЬЦА ====================
-USER_TOKEN = "vk1.a.edynZWBJGgef-lj0kOg-OdqtEzdzTm6YwntGyuzMSe8lf53NmWCYCsEW1XCyVTDZnjLnzeamx52N1grIhvo3Ovm7ykq081C7224Qo_uP8ls_tFptamaBjr-1tX6quT3IXUXDkQ9_UL0E1Ye39vGwNwsor7IOzJtx25w82uJXLcLgLmwQuTUtc3nyEclBzFluegboRUL8jb7U4LqFlxo-Pw"
+USER_TOKEN = "vk1.a.0L36fOnIsilzXUCcLgHEg7LxnKzW9nw-7iYgLlxjioYZBMqfHWFpAMsBuKXzFqjLb_x6YsuQTN2J76Y6LEEhrT4ytYyQqiQw7WHQrrUCoRFJcl-eE5cOmlxb_kLRz-VkOYXgd2Gq_--6PlO0vsNlOhgjg_PtTSpIRDMBeXX0byC6PKLXeG20v3nj_0DKeA3zHj-iSq_tWHv_WamZks79BA"
 MY_USER_ID = 848213593
 TOKEN_FILE = "connected_users.json"
 # =============================================================
@@ -40,7 +43,7 @@ user_nicknames = {}
 connected_users = {}
 active_threads = {}
 
-# 🔥 Обновленная жесткая база с матами
+# 🔥 Жесткая база с матами
 NEG_LINES = [
     "Ты че вообще высрал, долбоёб? Завали своё ебало и не позорься здесь.",
     "Хуйню неси в другом месте, сука, тут твоё мнение нахрен никому не сдалось.",
@@ -139,6 +142,12 @@ def generate_quote_image(avatar_url, author_name, quote_text):
     image.save(output, format="PNG")
     output.seek(0)
     return output
+
+# Функция генерации жесткого ГС через Edge-TTS
+async def generate_angry_voice(text, filename):
+    # Используем мужской голос Dmitry, понижаем питч на 15Hz (бас) и ускоряем на 8% для злости
+    communicate = edge_tts.Communicate(text, "ru-RU-DmitryNeural", pitch="-15Hz", rate="+8%")
+    await communicate.save(filename)
 
 # Фоновый воркер для ежеминутной отправки пиара
 def pr_loop(user_id, peer_id, token, pr_text):
@@ -245,7 +254,7 @@ def user_longpoll_loop(user_id, token):
                         cmd = parts[0].lower()
 
                         owner_cmds = ["/подключить", "/роль", "/снять", "/отпрпост"]
-                        admin_cmds = ["/кик", "/спам", "/негатив", "/унегатив", "/клон", "/уклон", "/реакция", "/стопреакция", "/опубликовать", "/группы", "/игнор", "/уигнор", "/пригласить", "/дрвчат", "/рассылка", "/отпрчелу", "/пиар", "/стоппиар"]
+                        admin_cmds = ["/кик", "/спам", "/негатив", "/унегатив", "/клон", "/уклон", "/реакция", "/стопреакция", "/опубликовать", "/группы", "/игнор", "/уигнор", "/пригласить", "/дрвчат", "/рассылка", "/отпрчелу", "/пиар", "/стоппиар", "/гс"]
                         
                         if cmd in owner_cmds and role != "owner":
                             try: vk.messages.edit(peer_id=peer_id, message_id=message_id, message="⚠️ Ошибка: Команда доступна только Владельцу!")
@@ -342,6 +351,43 @@ def user_longpoll_loop(user_id, token):
                             continue
 
                         # Исполнение админ-команд
+                        elif cmd == "/гс":
+                            voice_text = text[4:].strip()
+                            if not voice_text:
+                                try: vk.messages.edit(peer_id=peer_id, message_id=message_id, message="⚠️ Напиши текст для ГС! Пример: /гс Слышь, ты кого там клоуном назвал?")
+                                except: pass
+                                continue
+                            
+                            try:
+                                vk.messages.edit(peer_id=peer_id, message_id=message_id, message="🗣️ Записываю злобный ответ...")
+                                tmp_file = f"voice_{user_id}_{random.randint(1000, 9999)}.mp3"
+                                
+                                # Запуск асинхронного движка синтеза речи в синхронном потоке
+                                asyncio.run(generate_angry_voice(voice_text, tmp_file))
+                                
+                                # Загрузка в ВК как аудиосообщение
+                                upload_server = vk.docs.getMessagesUploadServer(type='audio_message', peer_id=peer_id)
+                                upload_url = upload_server['upload_url']
+                                
+                                with open(tmp_file, "rb") as f:
+                                    upload_req = requests.post(upload_url, files={'file': (tmp_file, f, 'audio/mpeg')}).json()
+                                    
+                                save_res = vk.docs.save(file=upload_req['file'])[0]
+                                attachment = f"doc{save_res['owner_id']}_{save_res['id']}"
+                                
+                                # Сносим исходный триггер и отправляем ГС
+                                vk.messages.delete(message_ids=message_id, delete_for_all=1)
+                                vk.messages.send(peer_id=peer_id, attachment=attachment, random_id=random.randint(1, 1000000))
+                                
+                                # Чистим мусор за собой
+                                if os.path.exists(tmp_file):
+                                    os.remove(tmp_file)
+                            except Exception as voice_err:
+                                print(f"Ошибка ГС: {voice_err}")
+                                try: vk.messages.edit(peer_id=peer_id, message_id=message_id, message=f"❌ Ошибка генерации ГС: {voice_err}")
+                                except: pass
+                            continue
+
                         elif cmd == "/пиар":
                             pr_text_arg = text[5:].strip()
                             if not pr_text_arg:
@@ -545,7 +591,7 @@ def user_longpoll_loop(user_id, token):
                                     s_text = " ".join(parts[1:-1]) or "🤖"
                                     vk.messages.edit(peer_id=peer_id, message_id=message_id, message=f"🚀 Спамлю {count} раз...")
                                     for _ in range(count):
-                                        time.sleep(0.9)  # ⏱️ Изменено с 0.4 на 0.9 сек
+                                        time.sleep(0.9)  
                                         vk.messages.send(peer_id=peer_id, message=s_text, random_id=random.randint(1,1000000))
                                 else:
                                     vk.messages.edit(peer_id=peer_id, message_id=message_id, message="⚠️ Пример: /спам текст 5")
@@ -605,6 +651,7 @@ def user_longpoll_loop(user_id, token):
                                 help_msg = (
                                     "⚙️ СПИСОК КОМАНД БОТА ⚙️\n\n"
                                     "🛡️ Администратор:\n"
+                                    "• /гс [текст] — отправить жесткое басистое голосовое сообщение 🗣️\n"
                                     "• /кик [id] — удалить из беседы\n"
                                     "• /спам [текст] [кол-во] — заспамить чат\n"
                                     "• /пиар [текст] — запустить ежеминутный пиар в чате 🚀\n"

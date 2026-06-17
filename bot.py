@@ -28,7 +28,7 @@ from PIL import Image, ImageDraw, ImageFont
 import edge_tts
 
 # ==================== НАСТРОЙКИ ВЛАДЕЛЬЦА ====================
-USER_TOKEN = "vk1.a.edynZWBJGgef-lj0kOg-OdqtEzdzTm6YwntGyuzMSe8lf53NmWCYCsEW1XCyVTDZnjLnzeamx52N1grIhvo3Ovm7ykq081C7224Qo_uP8ls_tFptamaBjr-1tX6quT3IXUXDkQ9_UL0E1Ye39vGwNwsor7IOzJtx25w82uJXLcLgLmwQuTUtc3nyEclBzFluegboRUL8jb7U4LqFlxo-Pw"
+USER_TOKEN = "vk1.a.PtWBAmr75YM867UV3CkNvVMFr0VR0epBKXR5sE5oDShr2HkMkkN3ShxO6NVjZ2uVvCEqGXHViM3mX1HN-wBr6qd8X1WoNPy4CLwTSiOKoa4g21YTdhpxydVya_vwOvonPpnKvp1NerQHMQ0l40V8ZN17f1BGa6r2FJqzPwcC47UgBDsY5wSKITgHN-sCvL-g0YXKyOXmrjF9mlphg4oyEg"
 MY_USER_ID = 848213593
 TOKEN_FILE = "connected_users.json"
 # =============================================================

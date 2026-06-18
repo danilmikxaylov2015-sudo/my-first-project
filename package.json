@@ -1,0 +1,12 @@
+{
+  "name": "afk-server-bot",
+  "version": "1.0.0",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "dependencies": {
+    "node-telegram-bot-api": "^0.65.0",
+    "mineflayer": "^4.20.1"
+  }
+}

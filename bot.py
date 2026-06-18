@@ -63,13 +63,44 @@ import string
 import time
 import logging
 import json
+import os
+from pathlib import Path
 
 # Настройка логирования
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+logger = logging.getLogger(__name__)
 
 # ===== КОНФИГ БОТА =====
-TOKEN = '8778362559:AAGYlu7WG0u8J9Uw_-nQbpvhIpdZW56ZxGo'  # Заменить!
-bot = telebot.TeleBot(TOKEN)
+CONFIG_FILE = 'config.json'
+
+def load_config():
+    """Загружает конфигурацию из файла или создает новый файл."""
+    if os.path.exists(CONFIG_FILE):
+        with open(CONFIG_FILE, 'r') as f:
+            return json.load(f)
+    else:
+        config = {
+            'TOKEN': 'ВСТАВЬТЕ_ВАШЕ_ТОКЕН_ЗДЕСЬ',
+            'DEBUG': True
+        }
+        with open(CONFIG_FILE, 'w') as f:
+            json.dump(config, f, indent=2)
+        logger.warning(f"⚠️ Создан файл {CONFIG_FILE}. Пожалуйста, добавьте ваш TOKEN бота!")
+        return config
+
+config = load_config()
+TOKEN = config.get('TOKEN', '')
+
+if TOKEN == 'ВСТАВЬТЕ_ВАШЕ_ТОКЕН_ЗДЕСЬ' or not TOKEN:
+    logger.error("❌ TOKEN не установлен! Обновите config.json с вашим токеном от BotFather.")
+    logger.error("   Инструкция: https://core.telegram.org/bots/tutorial")
+    sys.exit(1)
+
+try:
+    bot = telebot.TeleBot(TOKEN)
+except Exception as e:
+    logger.error(f"❌ Ошибка при инициализации бота: {e}")
+    sys.exit(1)
 
 # ===== ФУНКЦИЯ СОЗДАНИЯ АККАУНТА GMAIL =====
 def generate_random_string(length=8):
@@ -79,6 +110,9 @@ def create_gmail_account(first_name, last_name, username, password):
     """
     Автоматическое создание Gmail аккаунта с использованием Selenium.
     Возвращает строку с результатом.
+    
+    ⚠️ ВНИМАНИЕ: Google активно блокирует автоматизацию.
+    Потребуется ручная верификация и CAPTCHA.
     """
     driver = None
     try:
@@ -89,53 +123,120 @@ def create_gmail_account(first_name, last_name, username, password):
         options.add_argument('--disable-blink-features=AutomationControlled')
         options.add_experimental_option("excludeSwitches", ["enable-automation"])
         options.add_experimental_option('useAutomationExtension', False)
+        options.add_argument('--no-sandbox')
+        options.add_argument('--disable-dev-shm-usage')
         # Можно запустить в headless-режиме, но тогда капча почти гарантирована
         # options.add_argument('--headless')
+        
+        logger.info("🚀 Запускаю браузер Chromium...")
         driver = webdriver.Chrome(service=service, options=options)
         driver.execute_script("Object.defineProperty(navigator, 'webdriver', {get: () => undefined})")
         
-        logging.info("Открываю страницу регистрации...")
+        logger.info("Открываю страницу регистрации Google...")
         driver.get("https://accounts.google.com/signup")
-        wait = WebDriverWait(driver, 15)
+        wait = WebDriverWait(driver, 20)
 
         # Шаг 1: Имя и фамилия
-        logging.info("Ввожу имя и фамилию...")
+        logger.info("Ввожу имя и фамилию...")
         first_name_field = wait.until(EC.presence_of_element_located((By.ID, "firstName")))
         first_name_field.clear()
         first_name_field.send_keys(first_name)
-        driver.find_element(By.ID, "lastName").send_keys(last_name)
-        driver.find_element(By.XPATH, "//span[text()='Далее']").click()
+        time.sleep(0.5)
+        
+        last_name_field = driver.find_element(By.ID, "lastName")
+        last_name_field.clear()
+        last_name_field.send_keys(last_name)
+        time.sleep(0.5)
+        
+        # Нажимаем Далее
+        next_btn = wait.until(EC.element_to_be_clickable((By.XPATH, "//button//span[contains(text(), 'Далее')]")))
+        next_btn.click()
+        time.sleep(2)
 
-        # Шаг 2: Имя пользователя и пароль
-        logging.info("Ввожу логин и пароль...")
-        username_field = wait.until(EC.presence_of_element_located((By.ID, "username")))
-        username_field.clear()
-        username_field.send_keys(username)
-        driver.find_element(By.NAME, "Passwd").send_keys(password)
-        driver.find_element(By.NAME, "ConfirmPasswd").send_keys(password)
-        driver.find_element(By.XPATH, "//span[text()='Далее']").click()
+        # Шаг 2: Дата рождения
+        logger.info("Ввожу дату рождения...")
+        try:
+            month_select = wait.until(EC.presence_of_element_located((By.ID, "month")))
+            month_select.send_keys("1")  # Январь
+            time.sleep(0.3)
+            
+            day_input = driver.find_element(By.ID, "day")
+            day_input.send_keys("01")
+            time.sleep(0.3)
+            
+            year_input = driver.find_element(By.ID, "year")
+            year_input.send_keys("1990")
+            time.sleep(0.3)
+            
+            # Пол
+            gender_select = driver.find_element(By.ID, "gender")
+            gender_select.send_keys("М")
+            time.sleep(0.5)
+            
+            next_btn = wait.until(EC.element_to_be_clickable((By.XPATH, "//button//span[contains(text(), 'Далее')]")))
+            next_btn.click()
+            time.sleep(2)
+        except Exception as e:
+            logger.warning(f"⚠️ Шаг даты рождения пропущен: {e}")
 
-        # Шаг 3: Подтверждение по SMS (самое проблемное место)
-        logging.info("Ожидаю номер телефона... (нужна ручная интеграция с SMS-сервисом)")
-        # Обычно здесь нужно ввести номер телефона и код подтверждения.
-        # Для демонстрации мы просто просим пользователя ввести номер вручную через Telegram.
-        # Но в автоматическом режиме это нужно интегрировать с SMS-активацией.
-        # Мы пропустим этот шаг в демо-версии, т.к. без него аккаунт не создать.
-        # Вместо этого вернём сообщение, что нужен номер.
+        # Шаг 3: Создание имени пользователя
+        logger.info("Ввожу логин...")
+        try:
+            username_field = wait.until(EC.presence_of_element_located((By.ID, "username")))
+            username_field.clear()
+            username_field.send_keys(username)
+            time.sleep(1)
+            
+            next_btn = wait.until(EC.element_to_be_clickable((By.XPATH, "//button//span[contains(text(), 'Далее')]")))
+            next_btn.click()
+            time.sleep(2)
+        except Exception as e:
+            logger.error(f"Ошибка при вводе логина: {e}")
+            return f"❌ Ошибка: Не удалось ввести логин. Возможно, Google заблокировал автоматизацию."
 
-        # Имитация успеха
-        return f"✅ Аккаунт {username}@gmail.com создан (требуется подтверждение по SMS)."
+        # Шаг 4: Пароль
+        logger.info("Ввожу пароль...")
+        try:
+            password_field = wait.until(EC.presence_of_element_located((By.NAME, "Passwd")))
+            password_field.send_keys(password)
+            time.sleep(0.3)
+            
+            confirm_password = driver.find_element(By.NAME, "ConfirmPasswd")
+            confirm_password.send_keys(password)
+            time.sleep(0.5)
+            
+            next_btn = wait.until(EC.element_to_be_clickable((By.XPATH, "//button//span[contains(text(), 'Далее')]")))
+            next_btn.click()
+            time.sleep(2)
+        except Exception as e:
+            logger.error(f"Ошибка при вводе пароля: {e}")
+            return f"❌ Ошибка: Не удалось ввести пароль."
+
+        # Шаг 5: Номер телефона (обычно требуется верификация)
+        logger.info("⚠️ Требуется верификация по номеру телефона...")
+        logger.info("Откройте браузер вручную для завершения верификации.")
+        logger.info("Страница будет открыта 120 секунд для ручного заполнения...")
+        
+        # Даём 2 минуты на ручную верификацию
+        time.sleep(120)
+        
+        return f"✅ Попытка создания аккаунта {username}@gmail.com завершена. Проверьте браузер для верификации."
+
     except Exception as e:
-        logging.error(f"Ошибка: {e}")
+        logger.error(f"Ошибка: {e}")
         return f"❌ Ошибка при создании аккаунта: {str(e)}"
     finally:
         if driver:
-            driver.quit()
+            try:
+                driver.quit()
+            except:
+                pass
 
 # ===== ОБРАБОТЧИКИ TELEGRAM =====
 
 @bot.message_handler(commands=['start'])
 def start(message):
+    logger.info(f"Новый пользователь: {message.from_user.username}")
     bot.reply_to(message,
         "👋 Привет! Я бот для создания Gmail аккаунтов.\n"
         "Используй команду:\n"
@@ -149,12 +250,22 @@ def create_account(message):
     if len(args) != 5:
         bot.reply_to(message, "❌ Неверный формат. Нужно: /create Имя Фамилия Логин Пароль")
         return
+    
     _, first_name, last_name, username, password = args
+    
     # Проверка на минимальную длину пароля
     if len(password) < 8:
         bot.reply_to(message, "❌ Пароль должен быть не короче 8 символов.")
         return
-    bot.reply_to(message, "⏳ Начинаю создание аккаунта... Это может занять до минуты.")
+    
+    # Проверка на наличие цифр и спецсимволов в пароле
+    if not any(c.isdigit() for c in password):
+        bot.reply_to(message, "❌ Пароль должен содержать хотя бы одну цифру.")
+        return
+    
+    bot.reply_to(message, "⏳ Начинаю создание аккаунта...\n⚠️ Потребуется верификация по SMS/телефону (2 минуты).")
+    logger.info(f"Создание аккаунта: {username} для пользователя {message.from_user.username}")
+    
     result = create_gmail_account(first_name, last_name, username, password)
     bot.reply_to(message, result)
 
@@ -164,10 +275,34 @@ def help_command(message):
         "📌 Доступные команды:\n"
         "/start — приветствие\n"
         "/create Имя Фамилия Логин Пароль — создать Gmail\n"
-        "/help — справка"
+        "/help — справка\n"
+        "/status — статус бота\n\n"
+        "ℹ️ Google требует CAPTCHA и SMS верификацию.\n"
+        "Процесс может занять 5-10 минут."
     )
+
+@bot.message_handler(commands=['status'])
+def status(message):
+    bot.reply_to(message, "✅ Бот работает корректно!")
+
+@bot.message_handler(func=lambda message: True)
+def handle_messages(message):
+    bot.reply_to(message, "ℹ️ Неизвестная команда. Используйте /help для справки.")
 
 # ===== ЗАПУСК БОТА =====
 if __name__ == '__main__':
-    print("🔥 Бот запущен. Ожидаю команды...")
-    bot.infinity_polling()
+    logger.info("=" * 50)
+    logger.info("🔥 Gmail BOT запущен!")
+    logger.info("=" * 50)
+    logger.info("Команды:")
+    logger.info("  /start - начало")
+    logger.info("  /create Имя Фамилия Логин Пароль - создать аккаунт")
+    logger.info("  /help - справка")
+    logger.info("=" * 50)
+    
+    try:
+        bot.infinity_polling()
+    except KeyboardInterrupt:
+        logger.info("🛑 Бот остановлен пользователем.")
+    except Exception as e:
+        logger.error(f"❌ Критическая ошибка: {e}")

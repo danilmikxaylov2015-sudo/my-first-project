@@ -1,308 +1,186 @@
-#!/usr/bin/env python3
-# -*- coding: utf-8 -*-
-
-import subprocess
 import sys
-import importlib
-import os
-import time
-
-# ==============================================
-#  АВТОУСТАНОВЩИК ЗАВИСИМОСТЕЙ
-#  СКРИПТ ПРОВЕРЯЕТ И УСТАНАВЛИВАЕТ ВСЁ САМ
-# ==============================================
-
-REQUIRED_PACKAGES = [
-    'telebot',               # pyTelegramBotAPI
-    'selenium',
-    'webdriver_manager',
-    'phonenumbers',          # для примера, можно убрать
-]
-
-def install_package(package):
-    """Устанавливает пакет через pip."""
-    print(f"📦 Устанавливаю {package}...")
-    subprocess.check_call([sys.executable, "-m", "pip", "install", package])
-
-def check_and_install():
-    """Проверяет наличие пакетов и устанавливает недостающие."""
-    missing = []
-    for pkg in REQUIRED_PACKAGES:
-        try:
-            # Для пакетов с дефисом (например, telebot) импорт может отличаться
-            if pkg == 'telebot':
-                importlib.import_module('telebot')
-            else:
-                importlib.import_module(pkg.replace('-', '_'))
-        except ImportError:
-            missing.append(pkg)
-    if missing:
-        print("⚠️ Отсутствуют пакеты:", ', '.join(missing))
-        for pkg in missing:
-            install_package(pkg)
-        print("✅ Все зависимости установлены.")
-    else:
-        print("✅ Все зависимости уже установлены.")
-
-# Запускаем проверку перед основным кодом
-check_and_install()
-
-# ==============================================
-#  ТЕПЕРЬ МОЖНО ИМПОРТИРОВАТЬ ВСЁ ОСТАЛЬНОЕ
-# ==============================================
-
-import telebot
-from selenium import webdriver
-from selenium.webdriver.common.by import By
-from selenium.webdriver.support.ui import WebDriverWait
-from selenium.webdriver.support import expected_conditions as EC
-from selenium.webdriver.chrome.service import Service
-from webdriver_manager.chrome import ChromeDriverManager
-import random
-import string
-import time
+import subprocess
+import asyncio
 import logging
-import json
+import io
 import os
-from pathlib import Path
+import urllib.request
 
-# Настройка логирования
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
-logger = logging.getLogger(__name__)
-
-# ===== КОНФИГ БОТА =====
-CONFIG_FILE = 'config.json'
-
-def load_config():
-    """Загружает конфигурацию из файла или создает новый файл."""
-    if os.path.exists(CONFIG_FILE):
-        with open(CONFIG_FILE, 'r') as f:
-            return json.load(f)
-    else:
-        config = {
-            'TOKEN': 'ВСТАВЬТЕ_ВАШЕ_ТОКЕН_ЗДЕСЬ',
-            'DEBUG': True
-        }
-        with open(CONFIG_FILE, 'w') as f:
-            json.dump(config, f, indent=2)
-        logger.warning(f"⚠️ Создан файл {CONFIG_FILE}. Пожалуйста, добавьте ваш TOKEN бота!")
-        return config
-
-config = load_config()
-TOKEN = config.get('TOKEN', '')
-
-if TOKEN == 'ВСТАВЬТЕ_ВАШЕ_ТОКЕН_ЗДЕСЬ' or not TOKEN:
-    logger.error("❌ TOKEN не установлен! Обновите config.json с вашим токеном от BotFather.")
-    logger.error("   Инструкция: https://core.telegram.org/bots/tutorial")
-    sys.exit(1)
-
-try:
-    bot = telebot.TeleBot(TOKEN)
-except Exception as e:
-    logger.error(f"❌ Ошибка при инициализации бота: {e}")
-    sys.exit(1)
-
-# ===== ФУНКЦИЯ СОЗДАНИЯ АККАУНТА GMAIL =====
-def generate_random_string(length=8):
-    return ''.join(random.choices(string.ascii_lowercase + string.digits, k=length))
-
-def create_gmail_account(first_name, last_name, username, password):
-    """
-    Автоматическое создание Gmail аккаунта с использованием Selenium.
-    Возвращает строку с результатом.
-    
-    ⚠️ ВНИМАНИЕ: Google активно блокирует автоматизацию.
-    Потребуется ручная верификация и CAPTCHA.
-    """
-    driver = None
-    try:
-        # Настройка драйвера (автообновление через webdriver-manager)
-        service = Service(ChromeDriverManager().install())
-        options = webdriver.ChromeOptions()
-        # Добавляем аргументы для обхода антибот-систем (не всегда работает)
-        options.add_argument('--disable-blink-features=AutomationControlled')
-        options.add_experimental_option("excludeSwitches", ["enable-automation"])
-        options.add_experimental_option('useAutomationExtension', False)
-        options.add_argument('--no-sandbox')
-        options.add_argument('--disable-dev-shm-usage')
-        # Можно запустить в headless-режиме, но тогда капча почти гарантирована
-        # options.add_argument('--headless')
-        
-        logger.info("🚀 Запускаю браузер Chromium...")
-        driver = webdriver.Chrome(service=service, options=options)
-        driver.execute_script("Object.defineProperty(navigator, 'webdriver', {get: () => undefined})")
-        
-        logger.info("Открываю страницу регистрации Google...")
-        driver.get("https://accounts.google.com/signup")
-        wait = WebDriverWait(driver, 20)
-
-        # Шаг 1: Имя и фамилия
-        logger.info("Ввожу имя и фамилию...")
-        first_name_field = wait.until(EC.presence_of_element_located((By.ID, "firstName")))
-        first_name_field.clear()
-        first_name_field.send_keys(first_name)
-        time.sleep(0.5)
-        
-        last_name_field = driver.find_element(By.ID, "lastName")
-        last_name_field.clear()
-        last_name_field.send_keys(last_name)
-        time.sleep(0.5)
-        
-        # Нажимаем Далее
-        next_btn = wait.until(EC.element_to_be_clickable((By.XPATH, "//button//span[contains(text(), 'Далее')]")))
-        next_btn.click()
-        time.sleep(2)
-
-        # Шаг 2: Дата рождения
-        logger.info("Ввожу дату рождения...")
+# ==========================================
+# 1. АВТОМАТИЧЕСКАЯ УСТАНОВКА ЗАВИСИМОСТЕЙ
+# ==========================================
+def install_dependencies():
+    # Словарь: модуль для проверки -> пакет для установки через pip
+    packages = {
+        "aiogram": "aiogram==3.4.1",
+        "PIL": "Pillow"
+    }
+    for module, pkg in packages.items():
         try:
-            month_select = wait.until(EC.presence_of_element_located((By.ID, "month")))
-            month_select.send_keys("1")  # Январь
-            time.sleep(0.3)
-            
-            day_input = driver.find_element(By.ID, "day")
-            day_input.send_keys("01")
-            time.sleep(0.3)
-            
-            year_input = driver.find_element(By.ID, "year")
-            year_input.send_keys("1990")
-            time.sleep(0.3)
-            
-            # Пол
-            gender_select = driver.find_element(By.ID, "gender")
-            gender_select.send_keys("М")
-            time.sleep(0.5)
-            
-            next_btn = wait.until(EC.element_to_be_clickable((By.XPATH, "//button//span[contains(text(), 'Далее')]")))
-            next_btn.click()
-            time.sleep(2)
-        except Exception as e:
-            logger.warning(f"⚠️ Шаг даты рождения пропущен: {e}")
-
-        # Шаг 3: Создание имени пользователя
-        logger.info("Ввожу логин...")
-        try:
-            username_field = wait.until(EC.presence_of_element_located((By.ID, "username")))
-            username_field.clear()
-            username_field.send_keys(username)
-            time.sleep(1)
-            
-            next_btn = wait.until(EC.element_to_be_clickable((By.XPATH, "//button//span[contains(text(), 'Далее')]")))
-            next_btn.click()
-            time.sleep(2)
-        except Exception as e:
-            logger.error(f"Ошибка при вводе логина: {e}")
-            return f"❌ Ошибка: Не удалось ввести логин. Возможно, Google заблокировал автоматизацию."
-
-        # Шаг 4: Пароль
-        logger.info("Ввожу пароль...")
-        try:
-            password_field = wait.until(EC.presence_of_element_located((By.NAME, "Passwd")))
-            password_field.send_keys(password)
-            time.sleep(0.3)
-            
-            confirm_password = driver.find_element(By.NAME, "ConfirmPasswd")
-            confirm_password.send_keys(password)
-            time.sleep(0.5)
-            
-            next_btn = wait.until(EC.element_to_be_clickable((By.XPATH, "//button//span[contains(text(), 'Далее')]")))
-            next_btn.click()
-            time.sleep(2)
-        except Exception as e:
-            logger.error(f"Ошибка при вводе пароля: {e}")
-            return f"❌ Ошибка: Не удалось ввести пароль."
-
-        # Шаг 5: Номер телефона (обычно требуется верификация)
-        logger.info("⚠️ Требуется верификация по номеру телефона...")
-        logger.info("Откройте браузер вручную для завершения верификации.")
-        logger.info("Страница будет открыта 120 секунд для ручного заполнения...")
-        
-        # Даём 2 минуты на ручную верификацию
-        time.sleep(120)
-        
-        return f"✅ Попытка создания аккаунта {username}@gmail.com завершена. Проверьте браузер для верификации."
-
-    except Exception as e:
-        logger.error(f"Ошибка: {e}")
-        return f"❌ Ошибка при создании аккаунта: {str(e)}"
-    finally:
-        if driver:
+            __import__(module)
+        except ImportError:
+            print(f"[{pkg}] не найден. Начинаю установку...")
             try:
-                driver.quit()
-            except:
-                pass
+                subprocess.check_call([sys.executable, "-m", "pip", "install", pkg])
+                print(f"[{pkg}] успешно установлен!")
+            except Exception as e:
+                print(f"Ошибка при установке {pkg}: {e}")
 
-# ===== ОБРАБОТЧИКИ TELEGRAM =====
+install_dependencies()
 
-@bot.message_handler(commands=['start'])
-def start(message):
-    logger.info(f"Новый пользователь: {message.from_user.username}")
-    bot.reply_to(message,
-        "👋 Привет! Я бот для создания Gmail аккаунтов.\n"
-        "Используй команду:\n"
-        "/create Имя Фамилия Логин Пароль\n\n"
-        "Пример: /create Иван Петров ivanpetrov123 Qwerty2024!"
+# ==========================================
+# 2. ИМПОРТЫ 
+# ==========================================
+from aiogram import Bot, Dispatcher, F, types
+from aiogram.filters import Command
+from aiogram.enums import ParseMode
+from aiogram.client.default import DefaultBotProperties
+from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton, BufferedInputFile
+from PIL import Image, ImageDraw, ImageFont
+
+# ==========================================
+# 3. НАСТРОЙКИ (ЗАПОЛНИ ПОД СЕБЯ)
+# ==========================================
+BOT_TOKEN = "8778362559:AAGYlu7WG0u8J9Uw_-nQbpvhIpdZW56ZxGo"
+
+WATERMARK_TEXT = "@kiloai"
+BUTTON_TEXT = "🔥 Подписаться на канал"
+BUTTON_URL = "https://t.me/kiloai" # Ссылка на твой канал или ресурс
+
+bot = Bot(token=BOT_TOKEN, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
+dp = Dispatcher()
+
+# ==========================================
+# 4. ЛОГИКА ВОДЯНОГО ЗНАКА
+# ==========================================
+def get_font(size: int):
+    """Автоматически скачивает красивый шрифт, если его нет"""
+    font_path = "Roboto-Bold.ttf"
+    if not os.path.exists(font_path):
+        url = "https://github.com/googlefonts/roboto/raw/main/src/hinted/Roboto-Bold.ttf"
+        try:
+            urllib.request.urlretrieve(url, font_path)
+            print("Шрифт успешно скачан!")
+        except Exception:
+            return ImageFont.load_default() # Резервный вариант
+    return ImageFont.truetype(font_path, size)
+
+def add_watermark(image_bytes: io.BytesIO, watermark_text: str) -> io.BytesIO:
+    """Накладывает водяной знак на изображение"""
+    with Image.open(image_bytes) as img:
+        img = img.convert("RGBA")
+        width, height = img.size
+        
+        # Динамический размер шрифта в зависимости от ширины картинки
+        font_size = max(20, int(width / 20))
+        font = get_font(font_size)
+        
+        # Создаем прозрачный слой для текста
+        txt_layer = Image.new("RGBA", img.size, (255, 255, 255, 0))
+        draw = ImageDraw.Draw(txt_layer)
+        
+        # Вычисляем размер текста
+        try:
+            bbox = draw.textbbox((0, 0), watermark_text, font=font)
+            text_width = bbox[2] - bbox[0]
+            text_height = bbox[3] - bbox[1]
+        except AttributeError:
+            text_width, text_height = draw.textsize(watermark_text, font=font)
+            
+        # Позиция: правый нижний угол с отступом
+        margin = int(width * 0.03)
+        x = width - text_width - margin
+        y = height - text_height - margin
+        
+        # Рисуем черную тень для читаемости на белом фоне
+        shadow_color = (0, 0, 0, 180)
+        draw.text((x-2, y-2), watermark_text, font=font, fill=shadow_color)
+        draw.text((x+2, y+2), watermark_text, font=font, fill=shadow_color)
+        
+        # Рисуем сам белый текст
+        draw.text((x, y), watermark_text, font=font, fill=(255, 255, 255, 230))
+        
+        # Накладываем текст на картинку
+        out = Image.alpha_composite(img, txt_layer).convert("RGB")
+        
+        # Сохраняем результат в память
+        result_bytes = io.BytesIO()
+        out.save(result_bytes, format="JPEG", quality=95)
+        result_bytes.seek(0)
+        return result_bytes
+
+def get_keyboard() -> InlineKeyboardMarkup:
+    """Генерирует клавиатуру с кнопкой"""
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text=BUTTON_TEXT, url=BUTTON_URL)]
+    ])
+
+# ==========================================
+# 5. ОБРАБОТЧИКИ
+# ==========================================
+@dp.message(Command("start"))
+async def cmd_start(message: types.Message):
+    await message.answer(
+        "🎨 <b>Я бот-оформитель!</b>\n\n"
+        "Скинь мне <b>фотографию</b>, и я наложу на нее водяной знак и добавлю красивую кнопку.\n"
+        "Скинь <b>видео или GIF</b>, и я просто прикреплю к ним кнопку.\n\n"
+        "<i>Идеально для подготовки постов перед пересылкой в канал!</i>"
     )
 
-@bot.message_handler(commands=['create'])
-def create_account(message):
-    args = message.text.split()
-    if len(args) != 5:
-        bot.reply_to(message, "❌ Неверный формат. Нужно: /create Имя Фамилия Логин Пароль")
-        return
+@dp.message(F.photo)
+async def process_photo(message: types.Message):
+    wait_msg = await message.answer("⏳ Обрабатываю фотографию...")
     
-    _, first_name, last_name, username, password = args
+    # Скачиваем фото в память
+    file_id = message.photo[-1].file_id
+    file = await bot.get_file(file_id)
+    photo_stream = io.BytesIO()
+    await bot.download_file(file.file_path, photo_stream)
     
-    # Проверка на минимальную длину пароля
-    if len(password) < 8:
-        bot.reply_to(message, "❌ Пароль должен быть не короче 8 символов.")
-        return
+    # Накладываем водяной знак
+    photo_stream.seek(0)
+    result_stream = await asyncio.to_thread(add_watermark, photo_stream, WATERMARK_TEXT)
     
-    # Проверка на наличие цифр и спецсимволов в пароле
-    if not any(c.isdigit() for c in password):
-        bot.reply_to(message, "❌ Пароль должен содержать хотя бы одну цифру.")
-        return
-    
-    bot.reply_to(message, "⏳ Начинаю создание аккаунта...\n⚠️ Потребуется верификация по SMS/телефону (2 минуты).")
-    logger.info(f"Создание аккаунта: {username} для пользователя {message.from_user.username}")
-    
-    result = create_gmail_account(first_name, last_name, username, password)
-    bot.reply_to(message, result)
-
-@bot.message_handler(commands=['help'])
-def help_command(message):
-    bot.reply_to(message,
-        "📌 Доступные команды:\n"
-        "/start — приветствие\n"
-        "/create Имя Фамилия Логин Пароль — создать Gmail\n"
-        "/help — справка\n"
-        "/status — статус бота\n\n"
-        "ℹ️ Google требует CAPTCHA и SMS верификацию.\n"
-        "Процесс может занять 5-10 минут."
+    # Отправляем обратно с кнопкой и старым текстом
+    ready_photo = BufferedInputFile(result_stream.read(), filename="watermarked.jpg")
+    await wait_msg.delete()
+    await message.answer_photo(
+        photo=ready_photo,
+        caption=message.caption or "",
+        reply_markup=get_keyboard()
     )
 
-@bot.message_handler(commands=['status'])
-def status(message):
-    bot.reply_to(message, "✅ Бот работает корректно!")
+@dp.message(F.video | F.animation)
+async def process_video(message: types.Message):
+    # Видео и анимации просто переотправляем, добавляя кнопку
+    if message.video:
+        await message.answer_video(
+            video=message.video.file_id,
+            caption=message.caption or "",
+            reply_markup=get_keyboard()
+        )
+    elif message.animation:
+        await message.answer_animation(
+            animation=message.animation.file_id,
+            caption=message.caption or "",
+            reply_markup=get_keyboard()
+        )
 
-@bot.message_handler(func=lambda message: True)
-def handle_messages(message):
-    bot.reply_to(message, "ℹ️ Неизвестная команда. Используйте /help для справки.")
+@dp.message(~F.photo & ~F.video & ~F.animation & ~Command("start"))
+async def catch_others(message: types.Message):
+    await message.answer("Пожалуйста, отправь мне фото, видео или GIF.")
 
-# ===== ЗАПУСК БОТА =====
-if __name__ == '__main__':
-    logger.info("=" * 50)
-    logger.info("🔥 Gmail BOT запущен!")
-    logger.info("=" * 50)
-    logger.info("Команды:")
-    logger.info("  /start - начало")
-    logger.info("  /create Имя Фамилия Логин Пароль - создать аккаунт")
-    logger.info("  /help - справка")
-    logger.info("=" * 50)
-    
+# ==========================================
+# 6. ЗАПУСК
+# ==========================================
+async def main():
+    logging.basicConfig(level=logging.INFO)
+    print("Бот запускается...")
+    await bot.delete_webhook(drop_pending_updates=True)
+    await dp.start_polling(bot)
+
+if __name__ == "__main__":
     try:
-        bot.infinity_polling()
+        asyncio.run(main())
     except KeyboardInterrupt:
-        logger.info("🛑 Бот остановлен пользователем.")
-    except Exception as e:
-        logger.error(f"❌ Критическая ошибка: {e}")
+        print("Бот остановлен вручную.")

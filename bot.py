@@ -6,16 +6,9 @@ import sys
 import importlib
 import os
 
-# ==============================================
-#  АВТОУСТАНОВЩИК ВСЕХ ЗАВИСИМОСТЕЙ
-# ==============================================
-
 REQUIRED_PACKAGES = ['pyTelegramBotAPI', 'requests']
-
 def install_package(package):
-    print(f"📦 Устанавливаю {package}...")
     subprocess.check_call([sys.executable, "-m", "pip", "install", package])
-
 def check_and_install():
     missing = []
     for pkg in REQUIRED_PACKAGES:
@@ -27,69 +20,57 @@ def check_and_install():
         except ImportError:
             missing.append(pkg)
     if missing:
-        print("⚠️ Отсутствуют пакеты:", ', '.join(missing))
         for pkg in missing:
             install_package(pkg)
-        print("✅ Все зависимости установлены.")
-    else:
-        print("✅ Все зависимости уже установлены.")
-
-# Запускаем проверку до импорта остальных модулей
 check_and_install()
-
-# ==============================================
-#  ТЕПЕРЬ МОЖНО ИМПОРТИРОВАТЬ
-# ==============================================
 
 import telebot
 import requests
-import json
-import time
 import re
 
-# ===== КОНФИГ (ТВОИ ДАННЫЕ УЖЕ ВСТАВЛЕНЫ) =====
 TOKEN = '8778362559:AAGYlu7WG0u8J9Uw_-nQbpvhIpdZW56ZxGo'
 SHODAN_API_KEY = 'YierkuPU86aVZyIHiVyCD4xsI5IPxqZx'
 bot = telebot.TeleBot(TOKEN)
 
-# ===== ФУНКЦИЯ ПОИСКА КАМЕР (через Shodan API) =====
-def search_cameras(query='rtsp port:554', limit=5):
+def search_cameras(query, limit=5):
     url = f"https://api.shodan.io/shodan/host/search?key={SHODAN_API_KEY}&query={query}&limit={limit}"
-    try:
-        resp = requests.get(url, timeout=15)
-        if resp.status_code != 200:
-            return {'error': f"HTTP {resp.status_code}: {resp.text}"}
-        data = resp.json()
-        matches = data.get('matches', [])
-        cameras = []
-        for m in matches:
-            ip = m['ip_str']
-            port = m['port']
-            rtsp_url = f"rtsp://{ip}:{port}/live.sdp"
-            # Если в баннере есть другой путь — используем его
-            banner = m.get('data', '')
-            match = re.search(r'rtsp://[^\s]+', banner)
-            if match:
-                rtsp_url = match.group(0)
-            cameras.append({
-                'ip': ip,
-                'port': port,
-                'url': rtsp_url,
-                'country': m.get('location', {}).get('country_name', 'Unknown'),
-                'org': m.get('org', 'Unknown')
-            })
-        return cameras
-    except Exception as e:
-        return {'error': str(e)}
+    resp = requests.get(url, timeout=15)
+    if resp.status_code == 403:
+        # Пробуем без фильтра country
+        if 'country:' in query:
+            new_query = re.sub(r'country:\S+', '', query).strip()
+            if not new_query:
+                new_query = 'rtsp port:554'
+            return search_cameras(new_query, limit)
+        return {'error': '403 Forbidden — возможно, закончился лимит или неверный ключ'}
+    if resp.status_code != 200:
+        return {'error': f'HTTP {resp.status_code}: {resp.text}'}
+    data = resp.json()
+    matches = data.get('matches', [])
+    cameras = []
+    for m in matches:
+        ip = m['ip_str']
+        port = m['port']
+        rtsp_url = f"rtsp://{ip}:{port}/live.sdp"
+        banner = m.get('data', '')
+        match = re.search(r'rtsp://[^\s]+', banner)
+        if match:
+            rtsp_url = match.group(0)
+        cameras.append({
+            'ip': ip,
+            'port': port,
+            'url': rtsp_url,
+            'country': m.get('location', {}).get('country_name', 'Unknown'),
+            'org': m.get('org', 'Unknown')
+        })
+    return cameras
 
-# ===== КОМАНДЫ БОТА =====
 @bot.message_handler(commands=['start'])
 def start(message):
     bot.reply_to(message,
-        "📡 Бот для поиска открытых RTSP-камер.\n"
-        "/cameras [страна] — найти камеры (по умолчанию все)\n"
-        "/cameras Russia — камеры в России\n"
-        "/help — справка"
+        "📡 Бот для поиска открытых RTSP-камер (Shodan).\n"
+        "/cameras — найти 5 случайных камер\n"
+        "/cameras Russia — поиск по стране (если не сработает, уберёт фильтр)"
     )
 
 @bot.message_handler(commands=['cameras'])
@@ -101,8 +82,8 @@ def cameras_command(message):
         query += f' country:{country}'
     bot.reply_to(message, f"🔍 Ищу камеры по запросу: {query}")
     results = search_cameras(query, limit=5)
-    if 'error' in results:
-        bot.reply_to(message, f"❌ Ошибка: {results['error']}")
+    if isinstance(results, dict) and 'error' in results:
+        bot.reply_to(message, f"❌ {results['error']}")
         return
     if not results:
         bot.reply_to(message, "❌ Камеры не найдены.")
@@ -117,13 +98,8 @@ def cameras_command(message):
 
 @bot.message_handler(commands=['help'])
 def help_cmd(message):
-    bot.reply_to(message,
-        "/cameras — показать 5 камер\n"
-        "/cameras France — камеры во Франции"
-    )
+    bot.reply_to(message, "/cameras — найти камеры")
 
-# ===== ЗАПУСК =====
 if __name__ == '__main__':
-    print("🔥 Бот-поисковик камер запущен.")
-    print(f"Используется API-ключ Shodan: {SHODAN_API_KEY[:4]}...")
+    print("🔥 Бот запущен. Ошибка 403 автоматически обходится.")
     bot.infinity_polling()

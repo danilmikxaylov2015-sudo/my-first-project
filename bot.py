@@ -15,7 +15,7 @@ def install_libs():
         from vk_api.longpoll import VkLongPoll, VkEventType
         import edge_tts
     except ImportError:
-        print("📥 Устанавливаю необходимые библиотеки (Pillow удален для легкости)...")
+        print("📥 Устанавливаю необходимые библиотеки...")
         subprocess.check_call([sys.executable, "-m", "pip", "install", "vk-api", "requests", "edge-tts"])
 
 install_libs()
@@ -25,7 +25,7 @@ from vk_api.longpoll import VkLongPoll, VkEventType
 import edge_tts
 
 # ==================== НАСТРОЙКИ ВЛАДЕЛЬЦА ====================
-USER_TOKEN = "vk1.a.edynZWBJGgef-lj0kOg-OdqtEzdzTm6YwntGyuzMSe8lf53NmWCYCsEW1XCyVTDZnjLnzeamx52N1grIhvo3Ovm7ykq081C7224Qo_uP8ls_tFptamaBjr-1tX6quT3IXUXDkQ9_UL0E1Ye39vGwNwsor7IOzJtx25w82uJXLcLgLmwQuTUtc3nyEclBzFluegboRUL8jb7U4LqFlxo-Pw"
+USER_TOKEN = "vk1.a.PtWBAmr75YM867UV3CkNvVMFr0VR0epBKXR5sE5oDShr2HkMkkN3ShxO6NVjZ2uVvCEqGXHViM3mX1HN-wBr6qd8X1WoNPy4CLwTSiOKoa4g21YTdhpxydVya_vwOvonPpnKvp1NerQHMQ0l40V8ZN17f1BGa6r2FJqzPwcC47UgBDsY5wSKITgHN-sCvL-g0YXKyOXmrjF9mlphg4oyEg"
 MY_USER_ID = 848213593
 TOKEN_FILE = "connected_users.json"
 # =============================================================
@@ -68,31 +68,65 @@ def save_connected_users():
         print(f"Ошибка сохранения базы данных: {e}")
 
 def get_target_id(text, msg_info, vk):
+    # 1. Поиск по реплаю (ответу)
     reply_msg = msg_info.get('reply_message')
     if reply_msg:
-        return reply_msg['from_id']
+        return reply_msg.get('from_id')
     
-    mention_match = re.search(r'\[(id\d+|[a-zA-Z0-9_\.]+)\|.*?\]', text)
-    if mention_match:
-        raw_mention = mention_match.group(1)
-        if raw_mention.startswith("id"):
-            return int(raw_mention.replace("id", ""))
-        else:
-            try:
-                resolved = vk.utils.resolveScreenName(screen_name=raw_mention)
-                if resolved and resolved['type'] == 'user':
-                    return resolved['object_id']
-            except: pass
-            
+    # 2. Поиск по пересланному сообщению
+    fwd = msg_info.get('fwd_messages', [])
+    if fwd:
+        return fwd[0].get('from_id')
+        
     parts = text.split()
-    for part in parts:
-        if part.isdigit() and len(part) > 5:
-            return int(part)
+    if len(parts) < 2:
+        return None
+        
+    arg = parts[1]
+    
+    # 3. Поиск по упоминаниям: [id123|Имя] или [club123|Группа]
+    match = re.search(r'\[(id\d+|club\d+|public\d+|[a-zA-Z0-9_\.]+)\|.*?\]', text)
+    if match:
+        arg = match.group(1)
+        
+    # 4. Очищаем от мусора ссылки
+    arg = arg.replace('https://', '').replace('http://', '').replace('vk.com/', '').replace('@', '')
+    
+    # 5. Обработка явных ID и Club
+    if arg.startswith('id') and arg[2:].isdigit():
+        return int(arg[2:])
+    if (arg.startswith('club') or arg.startswith('public')):
+        num_str = re.sub(r'\D', '', arg)
+        if num_str:
+            return -int(num_str)
+            
+    # 6. Если это просто число (возможно с минусом для группы)
+    if arg.lstrip('-').isdigit():
+        return int(arg)
+        
+    # 7. Пробуем получить ID по короткому имени (screen_name), например vk.com/durov
+    try:
+        resolved = vk.utils.resolveScreenName(screen_name=arg)
+        if resolved:
+            if resolved['type'] == 'user':
+                return resolved['object_id']
+            elif resolved['type'] in ['group', 'page']:
+                return -resolved['object_id']
+    except:
+        pass
+        
+    # 8. Финальный поиск просто цифр ID в тексте
+    for p in parts[1:]:
+        clean = re.sub(r'\D', '', p)
+        if clean.isdigit() and len(clean) >= 4:
+            if '-' in p:
+                return -int(clean)
+            return int(clean)
+
     return None
 
 # Функция генерации жесткого ГС через Edge-TTS
 async def generate_angry_voice(text, filename):
-    # Используем мужской голос Dmitry, понижаем питч на 15Hz (бас) и ускоряем на 8% для злости
     communicate = edge_tts.Communicate(text, "ru-RU-DmitryNeural", pitch="-15Hz", rate="+8%")
     await communicate.save(filename)
 
@@ -304,16 +338,20 @@ def user_longpoll_loop(user_id, token):
                                 vk.messages.edit(peer_id=peer_id, message_id=message_id, message="⚠️ Укажите пользователя (ID, ссылку или ответьте на сообщение).")
                                 continue
                             try:
-                                res = vk.friends.add(user_id=t_id)
-                                if res == 1:
-                                    status_text = "Заявка успешно отправлена"
-                                elif res == 2:
-                                    status_text = "Заявка одобрена, пользователь добавлен"
-                                elif res == 4:
-                                    status_text = "Повторная отправка заявки"
+                                if t_id < 0: # Если это группа
+                                    vk.groups.join(group_id=abs(t_id))
+                                    vk.messages.edit(peer_id=peer_id, message_id=message_id, message=f"✅ Вы успешно подписались на [club{abs(t_id)}|группу]!")
                                 else:
-                                    status_text = "Пользователь успешно добавлен"
-                                vk.messages.edit(peer_id=peer_id, message_id=message_id, message=f"✅ {status_text} [id{t_id}|в друзья]!")
+                                    res = vk.friends.add(user_id=t_id)
+                                    if res == 1:
+                                        status_text = "Заявка успешно отправлена"
+                                    elif res == 2:
+                                        status_text = "Заявка одобрена, пользователь добавлен"
+                                    elif res == 4:
+                                        status_text = "Повторная отправка заявки"
+                                    else:
+                                        status_text = "Пользователь успешно добавлен"
+                                    vk.messages.edit(peer_id=peer_id, message_id=message_id, message=f"✅ {status_text} [id{t_id}|в друзья]!")
                             except Exception as e:
                                 vk.messages.edit(peer_id=peer_id, message_id=message_id, message=f"❌ Ошибка добавления: {e}")
                             continue

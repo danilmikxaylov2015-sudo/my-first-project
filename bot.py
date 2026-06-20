@@ -36,12 +36,12 @@ account_negatives = {}
 account_clones = {}     
 account_ignores = {}    
 account_pr = {}         
-auto_accept_users = set()  # Множество юзеров с включенным автоприемом заявок
+auto_accept_users = set()  
 user_nicknames = {}    
 connected_users = {}
 active_threads = {}
 
-# 🔥 Жесткая база негатива
+# 🔥 Жесткая база с матами
 NEG_LINES = [
     "Ты че вообще высрал, долбоёб? Завали своё ебало и не позорься здесь.",
     "Хуйню неси в другом месте, сука, тут твоё мнение нахрен никому не сдалось.",
@@ -109,7 +109,6 @@ def pr_loop(user_id, peer_id, token, pr_text):
             break 
         time.sleep(60)
 
-# Фоновый воркер для автоприема заявок в друзья
 def auto_accept_loop(user_id, token):
     try:
         vk_session = vk_api.VkApi(token=token, api_version='5.131')
@@ -122,7 +121,7 @@ def auto_accept_loop(user_id, token):
             if reqs and reqs.get('items'):
                 for uid in reqs['items']:
                     vk.friends.add(user_id=uid)
-                    time.sleep(0.5)  # Защита от флуд-контроля ВК
+                    time.sleep(0.5)
         except: pass
         time.sleep(20)
 
@@ -198,7 +197,6 @@ def user_longpoll_loop(user_id, token):
                         if from_id in account_reactions.get(user_id, {}) and cmid:
                             try: 
                                 time.sleep(0.3)  
-                                # ВК АПИ требует параметр cmid вместо conversation_message_id
                                 vk.messages.sendReaction(peer_id=peer_id, cmid=cmid, reaction_id=int(account_reactions[user_id][from_id]))
                             except Exception as e: 
                                 print(f"Ошибка отправки реакции: {e}")
@@ -464,20 +462,116 @@ def user_longpoll_loop(user_id, token):
                                 vk.messages.edit(peer_id=peer_id, message_id=message_id, message=f"❌ Ошибка рассылки: {e}")
                             continue
 
+                        # ==================== УЛУЧШЕННЫЕ КОМАНДЫ (С ОТВЕТАМИ) ====================
                         elif cmd == "/игнор":
                             t_id = get_target_id(text, msg_info, vk)
-                            if t_id:
-                                if user_id not in account_ignores: account_ignores[user_id] = []
-                                if t_id not in account_ignores[user_id]: account_ignores[user_id].append(t_id)
-                                vk.messages.edit(peer_id=peer_id, message_id=message_id, message="✅ Пользователь добавлен в бесшумный игнор")
+                            if not t_id:
+                                try: vk.messages.edit(peer_id=peer_id, message_id=message_id, message="⚠️ Укажите ID или ответьте на сообщение.")
+                                except: pass
+                                continue
+                            if user_id not in account_ignores: account_ignores[user_id] = []
+                            if t_id not in account_ignores[user_id]: account_ignores[user_id].append(t_id)
+                            try: vk.messages.edit(peer_id=peer_id, message_id=message_id, message="✅ Пользователь добавлен в бесшумный игнор")
+                            except: pass
                             continue
 
                         elif cmd == "/уигнор":
                             t_id = get_target_id(text, msg_info, vk)
+                            if not t_id:
+                                try: vk.messages.edit(peer_id=peer_id, message_id=message_id, message="⚠️ Укажите ID или ответьте на сообщение.")
+                                except: pass
+                                continue
                             if user_id in account_ignores and t_id in account_ignores[user_id]:
                                 account_ignores[user_id].remove(t_id)
-                                vk.messages.edit(peer_id=peer_id, message_id=message_id, message="✅ Пользователь удален из игнора")
+                                try: vk.messages.edit(peer_id=peer_id, message_id=message_id, message="✅ Пользователь удален из игнора")
+                                except: pass
+                            else:
+                                try: vk.messages.edit(peer_id=peer_id, message_id=message_id, message="⚠️ Пользователя нет в списке игнора.")
+                                except: pass
                             continue
+
+                        elif cmd == "/негатив":
+                            t_id = get_target_id(text, msg_info, vk)
+                            if not t_id:
+                                try: vk.messages.edit(peer_id=peer_id, message_id=message_id, message="⚠️ Укажите ID или ответьте на сообщение.")
+                                except: pass
+                                continue
+                            if user_id not in account_negatives: account_negatives[user_id] = []
+                            if t_id not in account_negatives[user_id]: account_negatives[user_id].append(t_id)
+                            try: vk.messages.edit(peer_id=peer_id, message_id=message_id, message="✅ Пользователь добавлен в негатив")
+                            except: pass
+                            continue
+
+                        elif cmd == "/унегатив":
+                            t_id = get_target_id(text, msg_info, vk)
+                            if not t_id:
+                                try: vk.messages.edit(peer_id=peer_id, message_id=message_id, message="⚠️ Укажите ID или ответьте на сообщение.")
+                                except: pass
+                                continue
+                            if user_id in account_negatives and t_id in account_negatives[user_id]:
+                                account_negatives[user_id].remove(t_id)
+                                try: vk.messages.edit(peer_id=peer_id, message_id=message_id, message="✅ Пользователь удален из негатива")
+                                except: pass
+                            else:
+                                try: vk.messages.edit(peer_id=peer_id, message_id=message_id, message="⚠️ Пользователя нет в списке негатива.")
+                                except: pass
+                            continue
+
+                        elif cmd == "/клон":
+                            t_id = get_target_id(text, msg_info, vk)
+                            if not t_id:
+                                try: vk.messages.edit(peer_id=peer_id, message_id=message_id, message="⚠️ Укажите ID или ответьте на сообщение.")
+                                except: pass
+                                continue
+                            if user_id not in account_clones: account_clones[user_id] = []
+                            if t_id not in account_clones[user_id]: account_clones[user_id].append(t_id)
+                            try: vk.messages.edit(peer_id=peer_id, message_id=message_id, message="✅ Пользователь добавлен в клоны")
+                            except: pass
+                            continue
+
+                        elif cmd == "/уклон":
+                            t_id = get_target_id(text, msg_info, vk)
+                            if not t_id:
+                                try: vk.messages.edit(peer_id=peer_id, message_id=message_id, message="⚠️ Укажите ID или ответьте на сообщение.")
+                                except: pass
+                                continue
+                            if user_id in account_clones and t_id in account_clones[user_id]:
+                                account_clones[user_id].remove(t_id)
+                                try: vk.messages.edit(peer_id=peer_id, message_id=message_id, message="✅ Пользователь удален из клонов")
+                                except: pass
+                            else:
+                                try: vk.messages.edit(peer_id=peer_id, message_id=message_id, message="⚠️ Пользователя нет в списке клонов.")
+                                except: pass
+                            continue
+
+                        elif cmd == "/реакция":
+                            t_id = get_target_id(text, msg_info, vk)
+                            if not t_id:
+                                try: vk.messages.edit(peer_id=peer_id, message_id=message_id, message="⚠️ Укажите ID или ответьте на сообщение.")
+                                except: pass
+                                continue
+                            r_id = int(parts[-1]) if len(parts) >= 2 and parts[-1].isdigit() else 1
+                            if user_id not in account_reactions: account_reactions[user_id] = {}
+                            account_reactions[user_id][t_id] = r_id
+                            try: vk.messages.edit(peer_id=peer_id, message_id=message_id, message=f"✅ Авто-реакция {r_id} для id{t_id} задана!")
+                            except: pass
+                            continue
+
+                        elif cmd == "/стопреакция":
+                            t_id = get_target_id(text, msg_info, vk)
+                            if not t_id:
+                                try: vk.messages.edit(peer_id=peer_id, message_id=message_id, message="⚠️ Укажите ID или ответьте на сообщение.")
+                                except: pass
+                                continue
+                            if user_id in account_reactions and t_id in account_reactions[user_id]:
+                                del account_reactions[user_id][t_id]
+                                try: vk.messages.edit(peer_id=peer_id, message_id=message_id, message="✅ Авто-реакция отключена")
+                                except: pass
+                            else:
+                                try: vk.messages.edit(peer_id=peer_id, message_id=message_id, message="⚠️ У этого пользователя не было авто-реакции.")
+                                except: pass
+                            continue
+                        # =======================================================================
 
                         elif cmd == "/пригласить":
                             if peer_id <= 2000000000:
@@ -494,36 +588,6 @@ def user_longpoll_loop(user_id, token):
                             except Exception as e: vk.messages.edit(peer_id=peer_id, message_id=message_id, message=f"❌ Ошибка: {e}")
                             continue
 
-                        elif cmd == "/негатив":
-                            t_id = get_target_id(text, msg_info, vk)
-                            if t_id:
-                                if user_id not in account_negatives: account_negatives[user_id] = []
-                                if t_id not in account_negatives[user_id]: account_negatives[user_id].append(t_id)
-                                vk.messages.edit(peer_id=peer_id, message_id=message_id, message="✅ Пользователь добавлен в негатив")
-                            continue
-
-                        elif cmd == "/унегатив":
-                            t_id = get_target_id(text, msg_info, vk)
-                            if user_id in account_negatives and t_id in account_negatives[user_id]:
-                                account_negatives[user_id].remove(t_id)
-                                vk.messages.edit(peer_id=peer_id, message_id=message_id, message="✅ Пользователь удален из негатива")
-                            continue
-
-                        elif cmd == "/клон":
-                            t_id = get_target_id(text, msg_info, vk)
-                            if t_id:
-                                if user_id not in account_clones: account_clones[user_id] = []
-                                if t_id not in account_clones[user_id]: account_clones[user_id].append(t_id)
-                                vk.messages.edit(peer_id=peer_id, message_id=message_id, message="✅ Пользователь добавлен в клоны")
-                            continue
-
-                        elif cmd == "/уклон":
-                            t_id = get_target_id(text, msg_info, vk)
-                            if user_id in account_clones and t_id in account_clones[user_id]:
-                                account_clones[user_id].remove(t_id)
-                                vk.messages.edit(peer_id=peer_id, message_id=message_id, message="✅ Пользователь удален из клонов")
-                            continue
-
                         elif cmd == "/спам":
                             try:
                                 if len(parts) >= 2 and parts[-1].isdigit():
@@ -536,22 +600,6 @@ def user_longpoll_loop(user_id, token):
                                 else:
                                     vk.messages.edit(peer_id=peer_id, message_id=message_id, message="⚠️ Пример: /спам text 5")
                             except: pass
-                            continue
-
-                        elif cmd == "/реакция":
-                            t_id = get_target_id(text, msg_info, vk)
-                            if t_id:
-                                r_id = int(parts[-1]) if len(parts) >= 2 and parts[-1].isdigit() else 1
-                                if user_id not in account_reactions: account_reactions[user_id] = {}
-                                account_reactions[user_id][t_id] = r_id
-                                vk.messages.edit(peer_id=peer_id, message_id=message_id, message=f"✅ Авто-реакция {r_id} для id{t_id} задана!")
-                            continue
-
-                        elif cmd == "/стопреакция":
-                            t_id = get_target_id(text, msg_info, vk)
-                            if user_id in account_reactions and t_id in account_reactions[user_id]:
-                                del account_reactions[user_id][t_id]
-                                vk.messages.edit(peer_id=peer_id, message_id=message_id, message="✅ Авто-реакция отключена")
                             continue
 
                         # Базовые / Общие команды

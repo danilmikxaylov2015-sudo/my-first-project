@@ -36,6 +36,7 @@ account_negatives = {}
 account_clones = {}     
 account_ignores = {}    
 account_pr = {}         
+auto_accept_users = set()  # Множество юзеров с включенным автоприемом заявок
 user_nicknames = {}    
 connected_users = {}
 active_threads = {}
@@ -107,6 +108,23 @@ def pr_loop(user_id, peer_id, token, pr_text):
             print(f"Ошибка выполнения пиара для ID {user_id} в чате {peer_id}: {e}")
             break 
         time.sleep(60)
+
+# Фоновый воркер для автоприема заявок в друзья
+def auto_accept_loop(user_id, token):
+    try:
+        vk_session = vk_api.VkApi(token=token, api_version='5.131')
+        vk = vk_session.get_api()
+    except: return
+    
+    while user_id in auto_accept_users:
+        try:
+            reqs = vk.friends.getRequests(need_viewed=1, count=100)
+            if reqs and reqs.get('items'):
+                for uid in reqs['items']:
+                    vk.friends.add(user_id=uid)
+                    time.sleep(0.5)  # Защита от флуд-контроля ВК
+        except: pass
+        time.sleep(20)
 
 def user_longpoll_loop(user_id, token):
     print(f"🌟 Запущен персональный LongPoll-поток для ID {user_id}")
@@ -180,8 +198,10 @@ def user_longpoll_loop(user_id, token):
                         if from_id in account_reactions.get(user_id, {}) and cmid:
                             try: 
                                 time.sleep(0.3)  
-                                vk.messages.sendReaction(peer_id=peer_id, conversation_message_id=cmid, reaction_id=int(account_reactions[user_id][from_id]))
-                            except: pass
+                                # ВК АПИ требует параметр cmid вместо conversation_message_id
+                                vk.messages.sendReaction(peer_id=peer_id, cmid=cmid, reaction_id=int(account_reactions[user_id][from_id]))
+                            except Exception as e: 
+                                print(f"Ошибка отправки реакции: {e}")
 
                     # --- ОБРАБОТКА СЕЛФ-КОМАНД ---
                     if event.from_me and text.startswith("/"):
@@ -190,7 +210,7 @@ def user_longpoll_loop(user_id, token):
                         cmd = parts[0].lower()
 
                         owner_cmds = ["/подключить", "/роль", "/снять", "/отпрпост"]
-                        admin_cmds = ["/кик", "/спам", "/негатив", "/унегатив", "/клон", "/уклон", "/реакция", "/стопреакция", "/опубликовать", "/группы", "/игнор", "/уигнор", "/пригласить", "/дрвчат", "/рассылка", "/отпрчелу", "/пиар", "/стоппиар", "/гс", "/добавить_в_др"]
+                        admin_cmds = ["/кик", "/спам", "/негатив", "/унегатив", "/клон", "/уклон", "/реакция", "/стопреакция", "/опубликовать", "/группы", "/игнор", "/уигнор", "/пригласить", "/дрвчат", "/рассылка", "/отпрчелу", "/пиар", "/стоппиар", "/гс", "/автозаявка"]
                         
                         if cmd in owner_cmds and role != "owner":
                             try: vk.messages.edit(peer_id=peer_id, message_id=message_id, message="⚠️ Ошибка: Команда доступна только Владельцу!")
@@ -275,79 +295,17 @@ def user_longpoll_loop(user_id, token):
                                 vk.messages.edit(peer_id=peer_id, message_id=message_id, message=f"❌ Не удалось опубликовать пост: {e}")
                             continue
 
-                        # ==================== УМНОЕ ДОБАВЛЕНИЕ В ДР ====================
-                        elif cmd == "/добавить_в_др":
-                            targets = []
-                            
-                            # 1. Из реплая
-                            reply = msg_info.get('reply_message')
-                            if reply and 'from_id' in reply:
-                                targets.append(reply['from_id'])
-                                
-                            # 2. Из пересланных
-                            for fwd in msg_info.get('fwd_messages', []):
-                                if 'from_id' in fwd: targets.append(fwd['from_id'])
-                                    
-                            # 3. Полный перебор текста (ссылки, юзернеймы, упоминания)
-                            for part in parts[1:]:
-                                clean_part = part.replace('https://', '').replace('http://', '').replace('vk.com/', '').replace('@', '').strip('[]|')
-                                
-                                if '|' in clean_part:
-                                    clean_part = clean_part.split('|')[0]
-                                
-                                if clean_part.startswith('id') and clean_part[2:].isdigit():
-                                    targets.append(int(clean_part[2:]))
-                                    continue
-                                if clean_part.startswith('club') and clean_part[4:].isdigit():
-                                    targets.append(-int(clean_part[4:]))
-                                    continue
-                                if clean_part.startswith('public') and clean_part[6:].isdigit():
-                                    targets.append(-int(clean_part[6:]))
-                                    continue
-                                if clean_part.lstrip('-').isdigit():
-                                    targets.append(int(clean_part))
-                                    continue
-                                
-                                # Если это короткий адрес (vk.com/durov)
-                                try:
-                                    res = vk.utils.resolveScreenName(screen_name=clean_part)
-                                    if res:
-                                        if res['type'] == 'user': targets.append(res['object_id'])
-                                        elif res['type'] in ['group', 'page', 'event']: targets.append(-res['object_id'])
-                                except: pass
-
-                            # Убираем дубликаты
-                            targets = list(set([t for t in targets if t is not None]))
-
-                            if not targets:
-                                try: vk.messages.edit(peer_id=peer_id, message_id=message_id, message="⚠️ Не нашел кого добавлять. Дай нормальную ссылку, ID или ответь на сообщение.")
-                                except: pass
-                                continue
-
-                            try: vk.messages.edit(peer_id=peer_id, message_id=message_id, message=f"⏳ Найдено целей: {len(targets)}. Обрабатываю...")
-                            except: pass
-
-                            results = []
-                            for t_id in targets:
-                                try:
-                                    if t_id < 0:
-                                        vk.groups.join(group_id=abs(t_id))
-                                        results.append(f"✅ Подписался на [club{abs(t_id)}|группу]")
-                                    else:
-                                        res = vk.friends.add(user_id=t_id)
-                                        if res == 1: status = "Заявка отправлена"
-                                        elif res == 2: status = "Заявка одобрена"
-                                        elif res == 4: status = "Повторная отправка"
-                                        else: status = "Успешно добавлен"
-                                        results.append(f"✅ {status} пользователю [id{t_id}|id{t_id}]")
-                                except Exception as e:
-                                    results.append(f"❌ Ошибка (id{t_id}): {e}")
-
-                            final_msg = "🔄 Результат выполнения:\n" + "\n".join(results)
-                            try: vk.messages.edit(peer_id=peer_id, message_id=message_id, message=final_msg)
-                            except: pass
+                        # Исполнение админ-команд
+                        elif cmd == "/автозаявка":
+                            if user_id in auto_accept_users:
+                                auto_accept_users.remove(user_id)
+                                vk.messages.edit(peer_id=peer_id, message_id=message_id, message="🛑 Авто-прием заявок в друзья ВЫКЛЮЧЕН.")
+                            else:
+                                auto_accept_users.add(user_id)
+                                t_aa = threading.Thread(target=auto_accept_loop, args=(user_id, token), daemon=True)
+                                t_aa.start()
+                                vk.messages.edit(peer_id=peer_id, message_id=message_id, message="✅ Авто-прием заявок ВКЛЮЧЕН. Бот будет автоматически одобрять все входящие запросы в фоне.")
                             continue
-                        # ===============================================================
 
                         elif cmd == "/гс":
                             voice_text = text[4:].strip()
@@ -355,6 +313,7 @@ def user_longpoll_loop(user_id, token):
                                 try: vk.messages.edit(peer_id=peer_id, message_id=message_id, message="⚠️ Напиши текст для ГС! Пример: /гс Слышь, ты кого там клоуном назвал?")
                                 except: pass
                                 continue
+                            
                             try:
                                 vk.messages.edit(peer_id=peer_id, message_id=message_id, message="🗣️ Записываю злобный ответ...")
                                 tmp_file = f"voice_{user_id}_{random.randint(1000, 9999)}.mp3"
@@ -621,7 +580,7 @@ def user_longpoll_loop(user_id, token):
                                     "• /дрвчат — инвайт всех друзей 💥\n"
                                     "• /рассылка [текст] — рассылка всем друзьям в ЛС 📬\n\n"
                                     "👤 Базовые:\n"
-                                    "• /добавить_в_др [id] — добавить человека в друзья 🤝\n"
+                                    "• /автозаявка — вкл/выкл авто-прием заявок в друзья 🤝\n"
                                     "• /пинг — проверить скорость ответа\n"
                                     "• /инфо [id] — расширенная инфа (друзья, подписчики, устройство)\n"
                                     "• /удалить (/дел) — удалить сообщение\n"

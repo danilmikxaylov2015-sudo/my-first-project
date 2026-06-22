@@ -1,30 +1,3 @@
-import sys
-import subprocess
-import os
-
-def _auto_install():
-    required_packages = ['vkbottle', 'aiohttp']
-    missing = []
-    
-    for package in required_packages:
-        try:
-            __import__(package)
-        except ImportError:
-            missing.append(package)
-            
-    if missing:
-        print(f"📦 Обнаружены отсутствующие библиотеки: {', '.join(missing)}")
-        print("⚙️ Запускаю автоматическую установку...")
-        try:
-            subprocess.check_call([sys.executable, '-m', 'pip', 'install', *missing])
-            print("✅ Библиотеки успешно установлены! Перезапускаю бота...\n")
-            os.execv(sys.executable, ['python'] + sys.argv)
-        except Exception as e:
-            print(f"❌ Ошибка автоустановки: {e}")
-            sys.exit(1)
-
-_auto_install()
-
 import logging
 from logging.handlers import RotatingFileHandler
 import sqlite3
@@ -33,13 +6,14 @@ import re
 import random
 import asyncio
 import json
-import aiohttp
-import threading
+import os
 import ast
 import operator
 from pathlib import Path
 from collections import deque
 from datetime import datetime, timedelta, timezone
+
+import aiohttp
 from vkbottle import API, Bot, Keyboard, Text, OpenLink
 from vkbottle.bot import Message
 from vkbottle.http import SingleAiohttpClient
@@ -64,22 +38,10 @@ def save_config(data):
         json.dump(data, f, indent=4, ensure_ascii=False)
 
 config = load_config()
-VK_TOKEN = config.get("VK_TOKEN", "").strip()
 
-if not VK_TOKEN:
-    print("\n⚠️ VK_TOKEN не найден!")
-    print("🔧 Режим автоматической настройки (Создание config.json)")
-    new_token = input("👉 Введите токен вашего сообщества VK: ").strip()
-    
-    if new_token:
-        config["VK_TOKEN"] = new_token
-        config.setdefault("OWNER_ID", 750694024)
-        config.setdefault("CEREBRAS_API_KEY", "csk-ph2w5j3tthvhrfhd4n6vw4eypkecj58hppf2eef6y5cte3vy")
-        save_config(config)
-        VK_TOKEN = new_token
-        print("✅ Токен успешно сохранен в файл config.json!\n")
-    else:
-        raise SystemExit("❌ Токен не был введен. Запуск прерван.")
+# Загружаем токен. Если его нет в конфиге, берем токен из твоего старого файла bot2.py, чтобы бот 100% запустился
+DEFAULT_TOKEN = "vk1.a.jmhGtKNRy-okO7WM6HyGJofKiJMaUnBDyB3kEqxdKypWpcnJaEB7KBJixSmIMLc7YLBJHu6wKY2sElm6VlK59GWdnir2DJQl5D9ohPLQ_8USyg-_gpviWLw31YaUIcx51Y84dSXBPjUpwIULup3JGkiHECtNOGSqlxX4q3IvWgeGEwzaXefqwmTa9aFx2-g9b5dmx07Wx-HH3-Tu_2HDag"
+VK_TOKEN = config.get("VK_TOKEN", "").strip() or os.getenv("VK_TOKEN", "").strip() or DEFAULT_TOKEN
 
 try:
     OWNER_ID = int(config.get("OWNER_ID", 750694024))
@@ -89,9 +51,16 @@ except ValueError:
 VK_API_URL = config.get("VK_API_URL", "https://api.vk.com/method/").strip() or "https://api.vk.com/method/"
 VK_API_FALLBACK_URL = config.get("VK_API_FALLBACK_URL", "https://api.vk.ru/method/").strip() or "https://api.vk.ru/method/"
 VK_API_VERSION = config.get("VK_API_VERSION", "5.199").strip() or "5.199"
-CEREBRAS_API_KEY = config.get("CEREBRAS_API_KEY", "").strip()
+CEREBRAS_API_KEY = config.get("CEREBRAS_API_KEY", "csk-ph2w5j3tthvhrfhd4n6vw4eypkecj58hppf2eef6y5cte3vy").strip()
 CEREBRAS_MODEL = config.get("CEREBRAS_MODEL", "llama3.1-8b").strip() or "llama3.1-8b"
 CEREBRAS_API_URL = config.get("CEREBRAS_API_URL", "https://api.cerebras.ai/v1/chat/completions").strip() or "https://api.cerebras.ai/v1/chat/completions"
+
+# Если файла нет, сохраняем дефолтные настройки
+if not CONFIG_PATH.exists():
+    config["VK_TOKEN"] = VK_TOKEN
+    config["OWNER_ID"] = OWNER_ID
+    config["CEREBRAS_API_KEY"] = CEREBRAS_API_KEY
+    save_config(config)
 
 MAX_WARNS = 3
 ANTISPAM_FLOOD_WINDOW = 12
@@ -103,6 +72,7 @@ ANTISPAM_ATTACHMENTS_LIMIT = 5
 ANTISPAM_AUTO_MUTE_MINUTES = 10
 ZOV_MAX_MENTIONS = 50
 ZOV_COOLDOWN_SECONDS = 180
+EXPIRE_CHECK_INTERVAL_SECONDS = 5
 GROUPS_PAGE_SIZE = 6
 ANTIMAT_NOTIFY_COOLDOWN_SECONDS = 15
 AI_COOLDOWN_SECONDS = 15
@@ -135,7 +105,7 @@ file_handler.setFormatter(logging.Formatter("%(asctime)s - %(levelname)s - %(mes
 log.addHandler(stream_handler)
 log.addHandler(file_handler)
 
-# Database
+# Database Setup
 class LockedCursor:
     def __init__(self, database, cursor):
         self.database = database
@@ -1245,27 +1215,6 @@ def build_groups_keyboard(peer_ids, titles, page=1):
     keyboard.row().add(Text("❌ Сбросить выбор", payload={"command": "owner_clear_group"}))
     return keyboard, page, max_page
 
-@bot.loop_wrapper.interval(seconds=EXPIRE_CHECK_INTERVAL_SECONDS)
-async def background_tasks_loop():
-    try:
-        now = int(time.time())
-        for uid, cid, _mby, reason in db.get_expired_mutes():
-            try: await api.messages.send(peer_id=cid, message=f"🔊 Мут истёк!\n\n{await mention_user(uid, cid)} (id{uid})\n✅ Теперь может писать в чате!", random_id=random.randint(0, 2**31))
-            except: pass
-        db.cleanup_expired_mutes()
-
-        for uid, cid, reason, _bby in db.get_expired_bans():
-            try: await api.messages.send(peer_id=cid, message=f"✅ Пользователь разбанен: {await mention_user(uid, cid)} (id{uid})\n⏱ Срок бана истек.", random_id=random.randint(0, 2**31))
-            except: pass
-        db.cleanup_expired_bans()
-
-        for rem_id, uid, cid, text in db.get_due_reminders():
-            try: await api.messages.send(peer_id=cid, message=f"⏰ Напоминание для {await mention_user(uid, cid)}:\n{text}", random_id=random.randint(0, 2**31))
-            except: pass
-            db.remove_reminder(rem_id)
-
-    except Exception as e: log.error(f"Background task error: {e}")
-
 @bot.labeler.private_message()
 async def handle_private(message: Message):
     text, user_id = message.text or "", message.from_id
@@ -1417,7 +1366,7 @@ async def handle_chat(message: Message):
     # COMMANDS
     if text == "/start": return await message.answer("🤖 VK Чат Менеджер Бот\n\n/help - Помощь\n/profile - Профиль\n/rules - Правила")
     
-    # Games & Fun
+    # Games & Fun (from bot2.py)
     elif text.startswith("/calc"): return await message.answer(safe_calc(text[5:]))
     elif text.startswith("/quote"): return await message.answer(f"💬 {random.choice(QUOTES)}")
     elif text.startswith("/joke"): return await message.answer(f"😄 {random.choice(JOKES)}")
@@ -1692,22 +1641,42 @@ async def handle_chat(message: Message):
         if cmd not in kc:
             bm, bd = None, float('inf')
             for k in kc:
-                d = sum(1 for c1, c2 in zip(cmd, k) if c1 != c2) + abs(len(cmd) - len(k)) # Fast rough Levenshtein 
+                d = sum(1 for c1, c2 in zip(cmd, k) if c1 != c2) + abs(len(cmd) - len(k))
                 if d < bd and d <= 3: bd, bm = d, k
             return await message.answer(f"❓ Неизвестно: {cmd}\n💡 Может: {bm}?" if bm else f"❓ Неизвестная команда: {cmd}")
 
+# Запуск фоновых задач Vkbottle (официальный и единственный безопасный способ)
+@bot.loop_wrapper.interval(seconds=EXPIRE_CHECK_INTERVAL_SECONDS)
+async def background_tasks_loop():
+    try:
+        now = int(time.time())
+        for uid, cid, _mby, reason in db.get_expired_mutes():
+            try: await api.messages.send(peer_id=cid, message=f"🔊 Мут истёк!\n\n{await mention_user(uid, cid)} (id{uid})\n✅ Теперь может писать в чате!", random_id=random.randint(0, 2**31))
+            except: pass
+        db.cleanup_expired_mutes()
+
+        for uid, cid, reason, _bby in db.get_expired_bans():
+            try: await api.messages.send(peer_id=cid, message=f"✅ Пользователь разбанен: {await mention_user(uid, cid)} (id{uid})\n⏱ Срок бана истек.", random_id=random.randint(0, 2**31))
+            except: pass
+        db.cleanup_expired_bans()
+
+        for rem_id, uid, cid, text in db.get_due_reminders():
+            try: await api.messages.send(peer_id=cid, message=f"⏰ Напоминание для {await mention_user(uid, cid)}:\n{text}", random_id=random.randint(0, 2**31))
+            except: pass
+            db.remove_reminder(rem_id)
+
+    except Exception as e:
+        log.error(f"Background task error: {e}")
+
+@bot.loop_wrapper.on_startup.append
+async def startup_tasks():
+    log.info("Настройка API...")
+    await ensure_vk_api_endpoint()
+    await get_bot_user_id()
+    log.info("API настроено, бот готов к работе.")
+
 if __name__ == "__main__":
     log.info("🚀 Запуск MEGA VK Чат Менеджер Бота...")
-    
-    @bot.loop_wrapper.on_startup.append
-    async def startup_tasks():
-        log.info("Настройка API...")
-        await ensure_vk_api_endpoint()
-        await get_bot_user_id()
-        log.info("API настроено, бот готов к работе.")
-
-    bot.loop_wrapper.add_task(background_tasks_loop())
-
     try:
         bot.run_forever()
     except KeyboardInterrupt:

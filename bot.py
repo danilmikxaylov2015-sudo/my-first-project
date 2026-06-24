@@ -28,7 +28,7 @@ import edge_tts
 USER_TOKEN = "vk1.a.PtWBAmr75YM867UV3CkNvVMFr0VR0epBKXR5sE5oDShr2HkMkkN3ShxO6NVjZ2uVvCEqGXHViM3mX1HN-wBr6qd8X1WoNPy4CLwTSiOKoa4g21YTdhpxydVya_vwOvonPpnKvp1NerQHMQ0l40V8ZN17f1BGa6r2FJqzPwcC47UgBDsY5wSKITgHN-sCvL-g0YXKyOXmrjF9mlphg4oyEg"
 MY_USER_ID = 848213593
 TOKEN_FILE = "connected_users.json"
-GEMINI_API_KEY = "AQ.Ab8RN6Ln9HdRyqJq3cLsewH8dxQ82Zz0D_NSZGBNfYn-PjKt3A"
+MISTRAL_API_KEY = "WOU07VcpYQ1jREfwMZLogrbTl7m6DMYs"
 # =============================================================
 
 db_lock = threading.Lock()
@@ -42,7 +42,7 @@ user_nicknames = {}
 connected_users = {}
 active_threads = {}
 
-# 🔥 Жесткая база с матами
+# 🔥 Жесткая база негатива
 NEG_LINES = [
     "Ты че вообще высрал, долбоёб? Завали своё ебало и не позорься здесь.",
     "Хуйню неси в другом месте, сука, тут твоё мнение нахрен никому не сдалось.",
@@ -297,24 +297,31 @@ def user_longpoll_loop(user_id, token):
                         # Исполнение админ-команд
                         elif cmd == "/ии":
                             if len(parts) < 2:
-                                try: vk.messages.edit(peer_id=peer_id, message_id=message_id, message="⚠️ Напиши запрос! Пример: /ии Напиши крутой тост")
+                                try: vk.messages.edit(peer_id=peer_id, message_id=message_id, message="⚠️ Напиши запрос! Пример: /ии Напиши стих")
                                 except: pass
                                 continue
                             
                             prompt_text = text.split(maxsplit=1)[1].strip()
                             try:
-                                vk.messages.edit(peer_id=peer_id, message_id=message_id, message="⏳ Подключаюсь к Gemini...")
+                                vk.messages.edit(peer_id=peer_id, message_id=message_id, message="⏳ Подключаюсь к Mistral AI...")
                                 
-                                url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key={GEMINI_API_KEY}"
-                                payload = {"contents": [{"parts": [{"text": prompt_text}]}]}
-                                headers = {"Content-Type": "application/json"}
+                                url = "https://api.mistral.ai/v1/chat/completions"
+                                payload = {
+                                    "model": "mistral-large-latest",
+                                    "messages": [{"role": "user", "content": prompt_text}]
+                                }
+                                headers = {
+                                    "Content-Type": "application/json",
+                                    "Accept": "application/json",
+                                    "Authorization": f"Bearer {MISTRAL_API_KEY}"
+                                }
                                 
                                 response = requests.post(url, json=payload, headers=headers, timeout=30)
                                 data = response.json()
                                 
                                 if response.status_code == 200:
-                                    reply_text = data['candidates'][0]['content']['parts'][0]['text']
-                                    # Очистка маркдауна (чтобы текст легко копировался)
+                                    reply_text = data['choices'][0]['message']['content']
+                                    # Очистка маркдауна
                                     reply_text = reply_text.replace("**", "").replace("*", "").replace("## ", "").replace("### ", "").strip()
                                     
                                     if len(reply_text) > 4000:
@@ -641,7 +648,7 @@ def user_longpoll_loop(user_id, token):
                                 help_msg = (
                                     "⚙️ СПИСОК КОМАНД БОТА ⚙️\n\n"
                                     "🛡️ Администратор:\n"
-                                    "• /ии [текст] — умный ответ от нейросети Gemini 🧠\n"
+                                    "• /ии [текст] — умный ответ от нейросети Mistral AI 🧠\n"
                                     "• /гс [текст] — отправить жесткое басистое голосовое сообщение 🗣️\n"
                                     "• /кик [id] — удалить из беседы\n"
                                     "• /спам [текст] [кол-во] — заспамить чат\n"

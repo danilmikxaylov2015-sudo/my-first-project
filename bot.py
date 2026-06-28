@@ -315,6 +315,29 @@ class Database:
         """)
         self._conn.commit()
         self._run_column_migrations()
+        self._cleanup_priority_invariant()
+
+    def _cleanup_priority_invariant(self) -> None:
+        """Сбрасывает priority=100 у тех участников, кто не является owner_id беседы.
+        Вызывается один раз при старте — исправляет старые данные."""
+        try:
+            self._conn.execute("""
+                UPDATE members SET priority=99
+                WHERE priority >= 100
+                AND NOT EXISTS (
+                    SELECT 1 FROM chats
+                    WHERE chats.chat_id = members.chat_id
+                    AND chats.owner_id = members.user_id
+                )
+            """)
+            changed = self._conn.execute(
+                "SELECT changes()"
+            ).fetchone()[0]
+            self._conn.commit()
+            if changed:
+                log.info(f"[DB] Инвариант владельца: понижен priority у {changed} участников.")
+        except Exception as e:
+            log.warning(f"[DB] _cleanup_priority_invariant: {e}")
 
     def _run_column_migrations(self) -> None:
         """Добавляет недостающие колонки в существующие таблицы (безопасно)."""
@@ -1034,9 +1057,7 @@ class PE:
             if chat and chat.get("owner_id") == user_id:
                 return PE.OWNER
             m = db.get_member(user_id, chat_id)
-            p = m.get("priority", 0) if m else 0
-            # priority 100 (PE.OWNER) зарезервирован исключительно для owner_id беседы
-            return min(p, PE.OWNER - 1)
+            return m.get("priority", 0) if m else 0
 
     @staticmethod
     def can_punish(actor: int, target: int) -> bool:
@@ -2764,6 +2785,9 @@ def handle_command(txt, chat_id, uid, prio, msg_id, reply_id, reply_from_id, cha
         if not role:
             reply("❌ Роль не найдена. Список: /roles")
             return
+        if role["priority"] >= prio:
+            reply(f"❌ Нельзя назначить роль [{role['priority']}] — она не ниже вашего приоритета [{prio}].")
+            return
         with _db_lock:
             db.upsert_member(tid, chat_id)
             db.update_member_role(tid, chat_id, role["id"], role["priority"])
@@ -3152,6 +3176,9 @@ def handle_command(txt, chat_id, uid, prio, msg_id, reply_id, reply_from_id, cha
                     else db.get_role_by_name(role_name_str, c["chat_id"])
                 )
             if role:
+                if role["priority"] >= prio:
+                    reply(f"❌ Нельзя назначить роль [{role['priority']}] — она не ниже вашего приоритета [{prio}].")
+                    return
                 with _db_lock:
                     db.upsert_member(tid, c["chat_id"])
                     db.update_member_role(tid, c["chat_id"], role["id"], role["priority"])
@@ -3689,6 +3716,9 @@ def handle_command(txt, chat_id, uid, prio, msg_id, reply_id, reply_from_id, cha
         t_prio = PE.get(tid, chat_id)
         if not PE.can_punish(prio, t_prio):
             reply("❌ Недостаточно прав.")
+            return
+        if rp >= prio:
+            reply(f"❌ Нельзя назначить временную роль [{rp}] — она не ниже вашего приоритета [{prio}].")
             return
         until_ts = int(time.time()) + mins * 60
         with _db_lock:
@@ -4291,18 +4321,28 @@ def _cleanup_loop() -> None:
 # ── PID-лок: защита от двойного запуска ───────────────────────────────────────
 _PID_FILE = Path("/tmp/norot_manager.pid")
 
-def _acquire_pid_lock() -> bool:
-    """Возвращает True если запуск разрешён, False если уже запущен."""
+def _acquire_pid_lock() -> None:
+    """Убивает старый экземпляр бота, если он ещё жив, и записывает свой PID."""
     if _PID_FILE.exists():
         try:
             old_pid = int(_PID_FILE.read_text().strip())
-            # Проверяем жив ли процесс с таким PID
-            os.kill(old_pid, 0)
-            return False  # процесс живой — двойной запуск
-        except (ProcessLookupError, PermissionError, ValueError):
-            pass  # процесс мёртв — перезаписываем PID
+            if old_pid != os.getpid():
+                try:
+                    os.kill(old_pid, signal.SIGTERM)
+                    log.info(f"[STARTUP] Отправлен SIGTERM старому процессу PID {old_pid}.")
+                    time.sleep(2)
+                    # Если всё ещё жив — SIGKILL
+                    try:
+                        os.kill(old_pid, signal.SIGKILL)
+                        log.info(f"[STARTUP] Старый процесс PID {old_pid} убит (SIGKILL).")
+                    except ProcessLookupError:
+                        pass  # уже завершился после SIGTERM
+                except (ProcessLookupError, PermissionError, ValueError):
+                    pass  # процесс уже мёртв
+        except (ValueError, OSError):
+            pass
     _PID_FILE.write_text(str(os.getpid()))
-    return True
+    log.info(f"[STARTUP] PID-файл записан: {os.getpid()}")
 
 def _release_pid_lock() -> None:
     try:
@@ -4338,10 +4378,8 @@ def _start_keepalive_server() -> None:
 
 
 def main() -> None:
-    # Защита от двойного запуска
-    if not _acquire_pid_lock():
-        log.error(f"[STARTUP] Бот уже запущен (PID {_PID_FILE.read_text().strip()}). Выход.")
-        sys.exit(1)
+    # Убиваем старый процесс если есть, записываем свой PID
+    _acquire_pid_lock()
 
     try:
         log.info("=" * 60)

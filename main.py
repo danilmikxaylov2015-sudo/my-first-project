@@ -2,27 +2,11 @@
 # -*- coding: utf-8 -*-
 
 """
-Однофайловый Telegram-бот для компиляции SA-MP/Open.MP gamemode:
-.pwn -> .amx
+Telegram-бот-компилятор SA-MP/Open.MP:
+принимает .pwn и возвращает .amx.
 
-Подходит для Linux-хостинга, включая Bothost.
-Никакие Python-библиотеки устанавливать не нужно.
-
-При первом запуске бот автоматически скачивает:
-1. Pawn Compiler 3.10.10 для Linux;
-2. стандартные Pawn includes;
-3. стандартные SA-MP includes 0.3.7 R2.
-
-Настройка токена:
-- предпочтительно задать переменную окружения BOT_TOKEN;
-- либо вставить токен ниже в поле TOKEN_FALLBACK.
-
-Важно:
-Если исходник содержит нестандартные #include, например:
-    YSI, streamer, sscanf2, a_mysql, foreach, pawn.cmd
-то соответствующие .inc тоже должны быть установлены на сервере.
-Если весь код действительно находится в одном .pwn и используется только
-<a_samp> и стандартная библиотека Pawn, дополнительных файлов не нужно.
+Pawn Compiler и стандартные include устанавливаются Dockerfile во время деплоя.
+Сторонние include (YSI, streamer, sscanf2, a_mysql и т. п.) в комплект не входят.
 """
 
 from __future__ import annotations
@@ -36,7 +20,6 @@ import re
 import shutil
 import subprocess
 import sys
-import tarfile
 import tempfile
 import time
 import traceback
@@ -44,81 +27,40 @@ import urllib.error
 import urllib.parse
 import urllib.request
 import uuid
-import zipfile
 from pathlib import Path
 from typing import Any
 
 
-# ---------------------------------------------------------------------------
-# НАСТРОЙКИ
-# ---------------------------------------------------------------------------
-
-# Если Bothost не передаёт токен как BOT_TOKEN, вставь его между кавычками.
-TOKEN_FALLBACK = ""
-
-BOT_TOKEN = (
+TOKEN = (
     os.getenv("BOT_TOKEN", "8975361055:AAET6brDJIAonm58z-2CNCHG-1WEMuC0Rmc").strip()
     or os.getenv("TELEGRAM_BOT_TOKEN", "").strip()
     or os.getenv("TOKEN", "").strip()
-    or TOKEN_FALLBACK.strip()
 )
 
-# Можно ограничить доступ одним или несколькими Telegram ID:
-# ALLOWED_USER_IDS=123456789,987654321
-# Пустое значение разрешает пользоваться ботом всем.
+PAWNCC = Path(os.getenv("PAWN_COMPILER", "/usr/local/bin/pawncc"))
+INCLUDE_DIR = Path(os.getenv("PAWN_INCLUDE_DIR", "/opt/pawn/include"))
+PAWN_FLAGS = os.getenv("PAWN_FLAGS", "-d3").split()
+
+MAX_PWN_SIZE = int(os.getenv("MAX_PWN_SIZE", str(10 * 1024 * 1024)))
+MAX_AMX_SIZE = int(os.getenv("MAX_AMX_SIZE", str(48 * 1024 * 1024)))
+COMPILE_TIMEOUT = int(os.getenv("COMPILE_TIMEOUT", "60"))
+POLL_TIMEOUT = int(os.getenv("POLL_TIMEOUT", "30"))
+
 ALLOWED_USER_IDS = {
     int(value.strip())
     for value in os.getenv("ALLOWED_USER_IDS", "").split(",")
     if value.strip().isdigit()
 }
 
-BASE_DIR = Path(__file__).resolve().parent
-TOOLCHAIN_DIR = Path(
-    os.getenv("PAWN_TOOLCHAIN_DIR", str(BASE_DIR / ".pawn_toolchain"))
-).resolve()
-
-COMPILER_VERSION = "3.10.10"
-COMPILER_URL = (
-    "https://github.com/pawn-lang/compiler/releases/download/"
-    "v3.10.10/pawnc-3.10.10-linux.tar.gz"
-)
-PAWN_STDLIB_URL = (
-    "https://github.com/pawn-lang/pawn-stdlib/"
-    "archive/refs/heads/master.zip"
-)
-SAMP_STDLIB_URL = (
-    "https://github.com/pawn-lang/samp-stdlib/"
-    "archive/refs/tags/0.3.7-R2-2-1.zip"
-)
-
-MAX_PWN_SIZE = int(os.getenv("MAX_PWN_SIZE", str(10 * 1024 * 1024)))
-MAX_AMX_SIZE = int(os.getenv("MAX_AMX_SIZE", str(48 * 1024 * 1024)))
-COMPILE_TIMEOUT = int(os.getenv("COMPILE_TIMEOUT", "45"))
-DOWNLOAD_TIMEOUT = int(os.getenv("DOWNLOAD_TIMEOUT", "90"))
-POLL_TIMEOUT = int(os.getenv("POLL_TIMEOUT", "30"))
-
-# Дополнительные параметры pawncc можно задать строкой:
-# PAWN_FLAGS=-d3 -O1
-PAWN_FLAGS = os.getenv("PAWN_FLAGS", "-d3").split()
-
-SAFE_FILENAME_RE = re.compile(r"[^A-Za-zА-Яа-яЁё0-9_.() -]+")
+SAFE_NAME_RE = re.compile(r"[^A-Za-zА-Яа-яЁё0-9_.() -]+")
 INCLUDE_RE = re.compile(
-    rb"(?im)^\s*#\s*(?:try)?include\s*[<\"]\s*([^>\"]+?)\s*[>\"]"
+    rb'(?im)^\s*#\s*(?:try)?include\s*[<"]\s*([^>"]+?)\s*[>"]'
 )
 
 API_BASE = ""
 FILE_BASE = ""
 UPDATE_OFFSET = 0
 
-COMPILER_PATH: Path | None = None
-INCLUDE_DIR: Path | None = None
-LIB_DIR: Path | None = None
-INSTALL_ERROR = ""
-
-
-# ---------------------------------------------------------------------------
-# СЛУЖЕБНЫЕ ФУНКЦИИ
-# ---------------------------------------------------------------------------
 
 def setup_logging() -> None:
     logging.basicConfig(
@@ -127,42 +69,39 @@ def setup_logging() -> None:
     )
 
 
-def safe_filename(filename: str, fallback: str = "gamemode.pwn") -> str:
-    name = Path(filename).name[:120]
-    name = SAFE_FILENAME_RE.sub("_", name).strip(" .")
-    return name or fallback
-
-
 def allowed(user_id: int | None) -> bool:
-    if not ALLOWED_USER_IDS:
-        return True
-    return user_id is not None and user_id in ALLOWED_USER_IDS
+    return not ALLOWED_USER_IDS or (
+        user_id is not None and user_id in ALLOWED_USER_IDS
+    )
+
+
+def safe_filename(name: str, fallback: str = "gamemode.pwn") -> str:
+    result = SAFE_NAME_RE.sub("_", Path(name).name[:120]).strip(" .")
+    return result or fallback
 
 
 def human_size(size: int) -> str:
-    units = ("Б", "КБ", "МБ", "ГБ")
     value = float(size)
-    for unit in units:
-        if value < 1024 or unit == units[-1]:
-            return f"{value:.1f} {unit}" if unit != "Б" else f"{int(value)} {unit}"
+    for unit in ("Б", "КБ", "МБ", "ГБ"):
+        if value < 1024 or unit == "ГБ":
+            return f"{int(value)} {unit}" if unit == "Б" else f"{value:.1f} {unit}"
         value /= 1024
     return f"{size} Б"
 
 
 def request_json(
     url: str,
-    *,
     data: dict[str, Any] | None = None,
-    timeout: int = DOWNLOAD_TIMEOUT,
+    timeout: int = 90,
 ) -> dict[str, Any]:
     headers = {
-        "User-Agent": "PawnCompilerTelegramBot/1.0",
+        "User-Agent": "BothostPawnCompilerBot/2.0",
         "Accept": "application/json",
     }
+    body = None
 
-    encoded = None
     if data is not None:
-        encoded = urllib.parse.urlencode(
+        body = urllib.parse.urlencode(
             {
                 key: json.dumps(value, ensure_ascii=False)
                 if isinstance(value, (dict, list))
@@ -173,49 +112,46 @@ def request_json(
         ).encode("utf-8")
         headers["Content-Type"] = "application/x-www-form-urlencoded"
 
-    request = urllib.request.Request(url, data=encoded, headers=headers)
+    request = urllib.request.Request(url, data=body, headers=headers)
     with urllib.request.urlopen(request, timeout=timeout) as response:
-        raw = response.read()
+        result = json.loads(response.read().decode("utf-8", errors="replace"))
 
-    result = json.loads(raw.decode("utf-8", errors="replace"))
     if not isinstance(result, dict):
-        raise RuntimeError("Сервер вернул неожиданный JSON")
+        raise RuntimeError("Telegram вернул некорректный JSON")
     return result
 
 
 def tg_api(method: str, data: dict[str, Any] | None = None) -> Any:
-    result = request_json(
+    response = request_json(
         f"{API_BASE}/{method}",
-        data=data or {},
-        timeout=max(POLL_TIMEOUT + 10, DOWNLOAD_TIMEOUT),
+        data or {},
+        timeout=max(90, POLL_TIMEOUT + 15),
     )
-    if not result.get("ok"):
+    if not response.get("ok"):
         raise RuntimeError(
-            f"Telegram API {method}: {result.get('description', 'unknown error')}"
+            f"Telegram API {method}: "
+            f"{response.get('description', 'неизвестная ошибка')}"
         )
-    return result.get("result")
+    return response.get("result")
 
 
 def send_message(
     chat_id: int,
     text: str,
     *,
-    reply_to_message_id: int | None = None,
-    parse_mode: str | None = None,
+    reply_to: int | None = None,
 ) -> dict[str, Any]:
-    data: dict[str, Any] = {
+    payload: dict[str, Any] = {
         "chat_id": chat_id,
         "text": text[:4096],
         "disable_web_page_preview": True,
     }
-    if reply_to_message_id:
-        data["reply_parameters"] = {
-            "message_id": reply_to_message_id,
+    if reply_to:
+        payload["reply_parameters"] = {
+            "message_id": reply_to,
             "allow_sending_without_reply": True,
         }
-    if parse_mode:
-        data["parse_mode"] = parse_mode
-    return tg_api("sendMessage", data)
+    return tg_api("sendMessage", payload)
 
 
 def edit_message(chat_id: int, message_id: int, text: str) -> None:
@@ -244,59 +180,59 @@ def delete_message(chat_id: int, message_id: int) -> None:
 
 def multipart_body(
     fields: dict[str, Any],
-    file_field: str,
+    field_name: str,
     file_path: Path,
-    sent_filename: str,
+    sent_name: str,
 ) -> tuple[bytes, str]:
     boundary = f"----PawnBot{uuid.uuid4().hex}"
-    buffer = io.BytesIO()
+    output = io.BytesIO()
 
     for name, value in fields.items():
         if value is None:
             continue
         if isinstance(value, (dict, list)):
             value = json.dumps(value, ensure_ascii=False)
-        buffer.write(f"--{boundary}\r\n".encode())
-        buffer.write(
+
+        output.write(f"--{boundary}\r\n".encode())
+        output.write(
             f'Content-Disposition: form-data; name="{name}"\r\n\r\n'.encode()
         )
-        buffer.write(str(value).encode("utf-8"))
-        buffer.write(b"\r\n")
+        output.write(str(value).encode("utf-8"))
+        output.write(b"\r\n")
 
-    content_type = (
-        mimetypes.guess_type(sent_filename)[0] or "application/octet-stream"
-    )
-    buffer.write(f"--{boundary}\r\n".encode())
-    buffer.write(
+    mime = mimetypes.guess_type(sent_name)[0] or "application/octet-stream"
+    output.write(f"--{boundary}\r\n".encode())
+    output.write(
         (
-            f'Content-Disposition: form-data; name="{file_field}"; '
-            f'filename="{sent_filename}"\r\n'
+            f'Content-Disposition: form-data; name="{field_name}"; '
+            f'filename="{sent_name}"\r\n'
         ).encode("utf-8")
     )
-    buffer.write(f"Content-Type: {content_type}\r\n\r\n".encode())
-    with file_path.open("rb") as source:
-        shutil.copyfileobj(source, buffer)
-    buffer.write(b"\r\n")
-    buffer.write(f"--{boundary}--\r\n".encode())
+    output.write(f"Content-Type: {mime}\r\n\r\n".encode())
 
-    return buffer.getvalue(), boundary
+    with file_path.open("rb") as source:
+        shutil.copyfileobj(source, output)
+
+    output.write(b"\r\n")
+    output.write(f"--{boundary}--\r\n".encode())
+    return output.getvalue(), boundary
 
 
 def send_document(
     chat_id: int,
     file_path: Path,
-    sent_filename: str,
+    sent_name: str,
     *,
     caption: str = "",
-    reply_to_message_id: int | None = None,
-) -> dict[str, Any]:
+    reply_to: int | None = None,
+) -> None:
     fields: dict[str, Any] = {
         "chat_id": chat_id,
         "caption": caption[:1024],
     }
-    if reply_to_message_id:
+    if reply_to:
         fields["reply_parameters"] = {
-            "message_id": reply_to_message_id,
+            "message_id": reply_to,
             "allow_sending_without_reply": True,
         }
 
@@ -304,364 +240,177 @@ def send_document(
         fields,
         "document",
         file_path,
-        sent_filename,
+        sent_name,
     )
 
     request = urllib.request.Request(
         f"{API_BASE}/sendDocument",
         data=body,
         headers={
-            "User-Agent": "PawnCompilerTelegramBot/1.0",
+            "User-Agent": "BothostPawnCompilerBot/2.0",
             "Content-Type": f"multipart/form-data; boundary={boundary}",
             "Content-Length": str(len(body)),
         },
     )
-    with urllib.request.urlopen(request, timeout=DOWNLOAD_TIMEOUT) as response:
+
+    with urllib.request.urlopen(request, timeout=120) as response:
         result = json.loads(response.read().decode("utf-8", errors="replace"))
 
     if not result.get("ok"):
         raise RuntimeError(
-            f"Telegram API sendDocument: "
-            f"{result.get('description', 'unknown error')}"
+            f"Telegram sendDocument: "
+            f"{result.get('description', 'неизвестная ошибка')}"
         )
-    return result["result"]
-
-
-def download_url(url: str, destination: Path, max_size: int) -> None:
-    destination.parent.mkdir(parents=True, exist_ok=True)
-    request = urllib.request.Request(
-        url,
-        headers={"User-Agent": "PawnCompilerTelegramBot/1.0"},
-    )
-
-    with urllib.request.urlopen(request, timeout=DOWNLOAD_TIMEOUT) as response:
-        length_header = response.headers.get("Content-Length")
-        if length_header and int(length_header) > max_size:
-            raise RuntimeError(
-                f"Скачиваемый файл слишком большой: {length_header} байт"
-            )
-
-        total = 0
-        with destination.open("wb") as output:
-            while True:
-                chunk = response.read(1024 * 256)
-                if not chunk:
-                    break
-                total += len(chunk)
-                if total > max_size:
-                    raise RuntimeError(
-                        f"Превышен предел загрузки {human_size(max_size)}"
-                    )
-                output.write(chunk)
 
 
 def download_telegram_file(file_id: str, destination: Path) -> None:
     info = tg_api("getFile", {"file_id": file_id})
-    file_path = info.get("file_path")
-    file_size = int(info.get("file_size") or 0)
+    remote_path = info.get("file_path")
+    size = int(info.get("file_size") or 0)
 
-    if not file_path:
+    if not remote_path:
         raise RuntimeError("Telegram не вернул путь к файлу")
-    if file_size and file_size > MAX_PWN_SIZE:
+    if size and size > MAX_PWN_SIZE:
         raise RuntimeError(
-            f"Файл слишком большой: {human_size(file_size)}. "
-            f"Лимит: {human_size(MAX_PWN_SIZE)}."
+            f"Файл весит {human_size(size)}, лимит — {human_size(MAX_PWN_SIZE)}"
         )
 
-    download_url(
-        f"{FILE_BASE}/{file_path}",
-        destination,
-        MAX_PWN_SIZE,
+    request = urllib.request.Request(
+        f"{FILE_BASE}/{remote_path}",
+        headers={"User-Agent": "BothostPawnCompilerBot/2.0"},
     )
 
-
-def safe_extract_tar(archive: Path, destination: Path) -> None:
-    destination.mkdir(parents=True, exist_ok=True)
-    destination_root = destination.resolve()
-
-    with tarfile.open(archive, "r:*") as tar:
-        for member in tar.getmembers():
-            target = (destination / member.name).resolve()
-            if destination_root not in target.parents and target != destination_root:
-                raise RuntimeError("Небезопасный путь внутри tar-архива")
-        tar.extractall(destination)
-
-
-def safe_extract_zip(archive: Path, destination: Path) -> None:
-    destination.mkdir(parents=True, exist_ok=True)
-    destination_root = destination.resolve()
-
-    with zipfile.ZipFile(archive) as zf:
-        for member in zf.infolist():
-            target = (destination / member.filename).resolve()
-            if destination_root not in target.parents and target != destination_root:
-                raise RuntimeError("Небезопасный путь внутри zip-архива")
-        zf.extractall(destination)
+    total = 0
+    with urllib.request.urlopen(request, timeout=120) as response:
+        with destination.open("wb") as output:
+            while True:
+                chunk = response.read(256 * 1024)
+                if not chunk:
+                    break
+                total += len(chunk)
+                if total > MAX_PWN_SIZE:
+                    raise RuntimeError("Превышен лимит размера PWN")
+                output.write(chunk)
 
 
-def copy_includes(source_root: Path, target_include: Path) -> int:
-    files = list(source_root.rglob("*.inc"))
-    if not files:
-        return 0
+def compiler_diagnostics() -> tuple[bool, str]:
+    if not PAWNCC.exists():
+        return False, f"Файл компилятора не найден: {PAWNCC}"
+    if not os.access(PAWNCC, os.X_OK):
+        return False, f"Нет права на запуск компилятора: {PAWNCC}"
+    if not INCLUDE_DIR.is_dir():
+        return False, f"Папка include не найдена: {INCLUDE_DIR}"
+    if not (INCLUDE_DIR / "a_samp.inc").exists():
+        return False, f"Не найден {INCLUDE_DIR / 'a_samp.inc'}"
 
-    common_root = source_root
-    children = [path for path in source_root.iterdir()] if source_root.exists() else []
-    directories = [path for path in children if path.is_dir()]
-    direct_includes = list(source_root.glob("*.inc"))
-
-    # GitHub-архивы обычно имеют одну корневую папку.
-    if not direct_includes and len(directories) == 1:
-        common_root = directories[0]
-
-    count = 0
-    for source in common_root.rglob("*.inc"):
-        relative = source.relative_to(common_root)
-        destination = target_include / relative
-        destination.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copy2(source, destination)
-        count += 1
-    return count
-
-
-def find_file(root: Path, name: str) -> Path | None:
-    matches = [path for path in root.rglob(name) if path.is_file()]
-    return matches[0] if matches else None
-
-
-def install_toolchain(force: bool = False) -> tuple[Path, Path, Path]:
-    global COMPILER_PATH, INCLUDE_DIR, LIB_DIR, INSTALL_ERROR
-
-    compiler_marker = TOOLCHAIN_DIR / ".installed"
-    compiler = find_file(TOOLCHAIN_DIR, "pawncc") if TOOLCHAIN_DIR.exists() else None
-    include_dir = TOOLCHAIN_DIR / "include"
-    library = find_file(TOOLCHAIN_DIR, "libpawnc.so") if TOOLCHAIN_DIR.exists() else None
-
-    if (
-        not force
-        and compiler_marker.exists()
-        and compiler
-        and include_dir.is_dir()
-        and library
-    ):
-        compiler.chmod(compiler.stat().st_mode | 0o111)
-        COMPILER_PATH = compiler
-        INCLUDE_DIR = include_dir
-        LIB_DIR = library.parent
-        INSTALL_ERROR = ""
-        return compiler, include_dir, library.parent
-
-    logging.info("Установка Pawn toolchain...")
-    INSTALL_ERROR = ""
-
-    temp_parent = TOOLCHAIN_DIR.parent
-    temp_parent.mkdir(parents=True, exist_ok=True)
-
-    with tempfile.TemporaryDirectory(
-        prefix="pawn_install_",
-        dir=str(temp_parent),
-    ) as temp_name:
-        temp = Path(temp_name)
-        new_toolchain = temp / "toolchain"
-        new_toolchain.mkdir()
-
-        compiler_archive = temp / "compiler.tar.gz"
-        pawn_stdlib_archive = temp / "pawn-stdlib.zip"
-        samp_stdlib_archive = temp / "samp-stdlib.zip"
-
-        logging.info("Скачивание Pawn Compiler %s", COMPILER_VERSION)
-        download_url(COMPILER_URL, compiler_archive, 20 * 1024 * 1024)
-        safe_extract_tar(compiler_archive, new_toolchain)
-
-        compiler = find_file(new_toolchain, "pawncc")
-        library = find_file(new_toolchain, "libpawnc.so")
-        if not compiler or not library:
-            raise RuntimeError(
-                "В архиве Pawn Compiler не найдены pawncc и libpawnc.so"
-            )
-        compiler.chmod(compiler.stat().st_mode | 0o111)
-
-        include_dir = new_toolchain / "include"
-        include_dir.mkdir(parents=True, exist_ok=True)
-
-        # Берём include, уже находящиеся в архиве компилятора.
-        for candidate in list(new_toolchain.rglob("include")):
-            if candidate.is_dir() and candidate != include_dir:
-                copy_includes(candidate, include_dir)
-
-        logging.info("Скачивание стандартных Pawn includes")
-        download_url(PAWN_STDLIB_URL, pawn_stdlib_archive, 20 * 1024 * 1024)
-        pawn_extract = temp / "pawn_stdlib"
-        safe_extract_zip(pawn_stdlib_archive, pawn_extract)
-        pawn_count = copy_includes(pawn_extract, include_dir)
-
-        logging.info("Скачивание стандартных SA-MP includes")
-        download_url(SAMP_STDLIB_URL, samp_stdlib_archive, 30 * 1024 * 1024)
-        samp_extract = temp / "samp_stdlib"
-        safe_extract_zip(samp_stdlib_archive, samp_extract)
-        samp_count = copy_includes(samp_extract, include_dir)
-
-        if not (include_dir / "a_samp.inc").exists():
-            raise RuntimeError("После установки отсутствует a_samp.inc")
-
-        marker_text = (
-            f"compiler={COMPILER_VERSION}\n"
-            f"pawn_includes={pawn_count}\n"
-            f"samp_includes={samp_count}\n"
-            f"installed_at={int(time.time())}\n"
+    environment = os.environ.copy()
+    environment["LD_LIBRARY_PATH"] = (
+        "/usr/local/lib"
+        + (
+            os.pathsep + environment["LD_LIBRARY_PATH"]
+            if environment.get("LD_LIBRARY_PATH")
+            else ""
         )
-        (new_toolchain / ".installed").write_text(
-            marker_text,
-            encoding="utf-8",
-        )
+    )
 
-        if TOOLCHAIN_DIR.exists():
-            shutil.rmtree(TOOLCHAIN_DIR)
-        shutil.move(str(new_toolchain), str(TOOLCHAIN_DIR))
-
-    compiler = find_file(TOOLCHAIN_DIR, "pawncc")
-    library = find_file(TOOLCHAIN_DIR, "libpawnc.so")
-    include_dir = TOOLCHAIN_DIR / "include"
-
-    if not compiler or not library or not include_dir.is_dir():
-        raise RuntimeError("Toolchain установлен не полностью")
-
-    compiler.chmod(compiler.stat().st_mode | 0o111)
-    COMPILER_PATH = compiler
-    INCLUDE_DIR = include_dir
-    LIB_DIR = library.parent
-    INSTALL_ERROR = ""
-
-    logging.info("Pawn toolchain установлен: %s", compiler)
-    return compiler, include_dir, library.parent
-
-
-def ensure_toolchain() -> tuple[Path, Path, Path]:
-    global INSTALL_ERROR
     try:
-        return install_toolchain(force=False)
+        result = subprocess.run(
+            [str(PAWNCC)],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            timeout=10,
+            env=environment,
+            check=False,
+        )
     except Exception as error:
-        INSTALL_ERROR = f"{type(error).__name__}: {error}"
-        logging.exception("Ошибка установки Pawn toolchain")
-        raise
+        return False, f"{type(error).__name__}: {error}"
+
+    text = result.stdout.decode("utf-8", errors="replace").strip()
+    first_line = text.splitlines()[0] if text else "pawncc запускается"
+    return True, first_line
 
 
-def resource_limiter():
-    if os.name != "posix":
-        return None
-
-    def apply_limits() -> None:
-        try:
-            import resource
-
-            resource.setrlimit(resource.RLIMIT_CPU, (35, 35))
-            resource.setrlimit(
-                resource.RLIMIT_AS,
-                (384 * 1024 * 1024, 384 * 1024 * 1024),
-            )
-            resource.setrlimit(
-                resource.RLIMIT_FSIZE,
-                (MAX_AMX_SIZE, MAX_AMX_SIZE),
-            )
-            resource.setrlimit(resource.RLIMIT_NOFILE, (64, 64))
-        except Exception:
-            pass
-
-    return apply_limits
-
-
-def scan_includes(source_data: bytes) -> list[str]:
-    values: list[str] = []
-    for match in INCLUDE_RE.finditer(source_data):
-        try:
-            value = match.group(1).decode("utf-8", errors="replace").strip()
-        except Exception:
-            continue
-        if value and value not in values:
-            values.append(value)
-    return values[:50]
+def scan_includes(data: bytes) -> list[str]:
+    result: list[str] = []
+    for match in INCLUDE_RE.finditer(data):
+        name = match.group(1).decode("utf-8", errors="replace").strip()
+        if name and name not in result:
+            result.append(name)
+    return result[:50]
 
 
 def compile_pwn(source: Path, output: Path) -> tuple[int, str]:
-    compiler, include_dir, lib_dir = ensure_toolchain()
+    environment = os.environ.copy()
+    environment["LD_LIBRARY_PATH"] = (
+        "/usr/local/lib"
+        + (
+            os.pathsep + environment["LD_LIBRARY_PATH"]
+            if environment.get("LD_LIBRARY_PATH")
+            else ""
+        )
+    )
 
     command = [
-        str(compiler),
+        str(PAWNCC),
         str(source),
-        f"-i{include_dir}{os.sep}",
+        f"-i{source.parent}{os.sep}",
+        f"-i{INCLUDE_DIR}{os.sep}",
         f"-o{output}",
         *PAWN_FLAGS,
     ]
-
-    environment = os.environ.copy()
-    old_ld_path = environment.get("LD_LIBRARY_PATH", "")
-    environment["LD_LIBRARY_PATH"] = (
-        str(lib_dir)
-        if not old_ld_path
-        else f"{lib_dir}{os.pathsep}{old_ld_path}"
-    )
 
     kwargs: dict[str, Any] = {
         "cwd": str(source.parent),
         "stdout": subprocess.PIPE,
         "stderr": subprocess.STDOUT,
-        "text": False,
         "timeout": COMPILE_TIMEOUT,
         "env": environment,
+        "check": False,
     }
 
-    limiter = resource_limiter()
-    if limiter:
-        kwargs["preexec_fn"] = limiter
+    if os.name == "posix":
+        def apply_limits() -> None:
+            try:
+                import resource
+                resource.setrlimit(resource.RLIMIT_CPU, (45, 45))
+                resource.setrlimit(
+                    resource.RLIMIT_FSIZE,
+                    (MAX_AMX_SIZE, MAX_AMX_SIZE),
+                )
+                resource.setrlimit(resource.RLIMIT_NOFILE, (64, 64))
+            except Exception:
+                pass
 
-    completed = subprocess.run(command, **kwargs)
-    log = completed.stdout.decode("utf-8", errors="replace").strip()
-    return completed.returncode, log
+        kwargs["preexec_fn"] = apply_limits
+
+    result = subprocess.run(command, **kwargs)
+    log = result.stdout.decode("utf-8", errors="replace").strip()
+    return result.returncode, log
 
 
-def locate_amx(workdir: Path, expected: Path) -> Path | None:
-    if expected.is_file():
-        return expected
-
-    candidates = sorted(
-        workdir.rglob("*.amx"),
-        key=lambda path: path.stat().st_mtime,
-        reverse=True,
-    )
-    return candidates[0] if candidates else None
-
-
-def send_compile_log(
+def send_log(
     chat_id: int,
     reply_to: int,
     title: str,
     log: str,
 ) -> None:
-    log = log.strip() or "Компилятор не вернул текст ошибки."
-    text = f"{title}\n\n{log}"
+    full_text = f"{title}\n\n{log.strip() or 'Компилятор не вернул лог.'}"
 
-    if len(text) <= 4000:
-        send_message(
-            chat_id,
-            text,
-            reply_to_message_id=reply_to,
-        )
+    if len(full_text) <= 4000:
+        send_message(chat_id, full_text, reply_to=reply_to)
         return
 
-    with tempfile.TemporaryDirectory(prefix="pawn_log_") as temp_name:
-        log_path = Path(temp_name) / "compile.log"
-        log_path.write_text(text, encoding="utf-8")
+    with tempfile.TemporaryDirectory(prefix="pawn_log_") as temp:
+        log_file = Path(temp) / "compile.log"
+        log_file.write_text(full_text, encoding="utf-8")
         send_document(
             chat_id,
-            log_path,
+            log_file,
             "compile.log",
             caption=title,
-            reply_to_message_id=reply_to,
+            reply_to=reply_to,
         )
 
-
-# ---------------------------------------------------------------------------
-# ОБРАБОТКА TELEGRAM
-# ---------------------------------------------------------------------------
 
 def command_name(text: str) -> str:
     first = text.strip().split(maxsplit=1)[0].lower()
@@ -671,103 +420,64 @@ def command_name(text: str) -> str:
 def handle_command(message: dict[str, Any], command: str) -> None:
     chat_id = int(message["chat"]["id"])
     message_id = int(message["message_id"])
-    user = message.get("from") or {}
-    user_id = user.get("id")
+    user_id = (message.get("from") or {}).get("id")
 
     if not allowed(user_id):
-        send_message(
-            chat_id,
-            "У вас нет доступа к этому боту.",
-            reply_to_message_id=message_id,
-        )
+        send_message(chat_id, "У вас нет доступа к боту.", reply_to=message_id)
         return
 
-    if command in ("/start", "/help"):
+    if command in {"/start", "/help"}:
         send_message(
             chat_id,
-            "Отправь gamemode с расширением .pwn как документ.\n\n"
-            "Бот сам установит Pawn Compiler и стандартные include, "
-            "скомпилирует весь мод и пришлёт готовый .amx.\n\n"
-            "Команды:\n"
-            "/status — состояние компилятора\n"
-            "/reinstall — переустановить компилятор и include\n\n"
-            "Если появится ошибка «cannot read from file», значит в моде "
-            "используется сторонний include, которого нет в одном .pwn.",
-            reply_to_message_id=message_id,
+            "Отправь SA-MP/Open.MP мод с расширением .pwn как документ.\n\n"
+            "Бот скомпилирует его и пришлёт готовый .amx.\n\n"
+            "/status — проверить компилятор\n\n"
+            "Стандартные include уже установлены. Если мод использует YSI, "
+            "streamer, sscanf2, a_mysql или другие сторонние include, "
+            "их нужно отдельно добавить в Dockerfile.",
+            reply_to=message_id,
         )
         return
 
     if command == "/status":
-        compiler_text = str(COMPILER_PATH) if COMPILER_PATH else "не установлен"
+        ok, details = compiler_diagnostics()
         include_count = (
             len(list(INCLUDE_DIR.rglob("*.inc")))
-            if INCLUDE_DIR and INCLUDE_DIR.exists()
+            if INCLUDE_DIR.is_dir()
             else 0
         )
         send_message(
             chat_id,
-            "Статус Pawn-компилятора\n\n"
-            f"Версия: {COMPILER_VERSION}\n"
-            f"pawncc: {compiler_text}\n"
-            f"Include-файлов: {include_count}\n"
-            f"Лимит PWN: {human_size(MAX_PWN_SIZE)}\n"
-            f"Таймаут: {COMPILE_TIMEOUT} сек.\n"
-            f"Последняя ошибка установки: {INSTALL_ERROR or 'нет'}",
-            reply_to_message_id=message_id,
+            ("Компилятор работает." if ok else "Компилятор НЕ работает.")
+            + f"\n\n{details}"
+            + f"\nInclude-файлов: {include_count}"
+            + f"\nПуть: {PAWNCC}",
+            reply_to=message_id,
         )
         return
 
-    if command == "/reinstall":
-        status = send_message(
-            chat_id,
-            "Переустанавливаю Pawn Compiler и стандартные include…",
-            reply_to_message_id=message_id,
-        )
-        try:
-            install_toolchain(force=True)
-            edit_message(
-                chat_id,
-                int(status["message_id"]),
-                "Готово. Pawn Compiler и стандартные include переустановлены.",
-            )
-        except Exception as error:
-            edit_message(
-                chat_id,
-                int(status["message_id"]),
-                f"Ошибка переустановки:\n{type(error).__name__}: {error}",
-            )
-        return
-
-    send_message(
-        chat_id,
-        "Неизвестная команда. Отправь /start.",
-        reply_to_message_id=message_id,
-    )
+    send_message(chat_id, "Неизвестная команда.", reply_to=message_id)
 
 
 def handle_document(message: dict[str, Any]) -> None:
     chat_id = int(message["chat"]["id"])
     message_id = int(message["message_id"])
-    user = message.get("from") or {}
-    user_id = user.get("id")
+    user_id = (message.get("from") or {}).get("id")
 
     if not allowed(user_id):
-        send_message(
-            chat_id,
-            "У вас нет доступа к этому боту.",
-            reply_to_message_id=message_id,
-        )
+        send_message(chat_id, "У вас нет доступа к боту.", reply_to=message_id)
         return
 
     document = message.get("document") or {}
-    filename = safe_filename(document.get("file_name") or "gamemode.pwn")
-    suffix = Path(filename).suffix.lower()
+    original_name = safe_filename(
+        document.get("file_name") or "gamemode.pwn"
+    )
 
-    if suffix != ".pwn":
+    if Path(original_name).suffix.lower() != ".pwn":
         send_message(
             chat_id,
-            "Нужен именно файл .pwn, отправленный как документ.",
-            reply_to_message_id=message_id,
+            "Нужен файл с расширением .pwn.",
+            reply_to=message_id,
         )
         return
 
@@ -775,102 +485,107 @@ def handle_document(message: dict[str, Any]) -> None:
     if declared_size > MAX_PWN_SIZE:
         send_message(
             chat_id,
-            f"Файл слишком большой: {human_size(declared_size)}. "
-            f"Лимит: {human_size(MAX_PWN_SIZE)}.",
-            reply_to_message_id=message_id,
+            f"Файл слишком большой: {human_size(declared_size)}.",
+            reply_to=message_id,
+        )
+        return
+
+    compiler_ok, compiler_info = compiler_diagnostics()
+    if not compiler_ok:
+        send_message(
+            chat_id,
+            "Компилятор не запустился:\n\n"
+            f"{compiler_info}\n\n"
+            "Проверь, что проект развёрнут именно через новый Dockerfile.",
+            reply_to=message_id,
         )
         return
 
     status = send_message(
         chat_id,
-        "Скачиваю PWN и запускаю компиляцию…",
-        reply_to_message_id=message_id,
+        "Скачиваю PWN…",
+        reply_to=message_id,
     )
     status_id = int(status["message_id"])
 
-    with tempfile.TemporaryDirectory(prefix="pawn_job_") as temp_name:
-        workdir = Path(temp_name)
-        # Внутреннее ASCII-имя исключает проблемы pawncc с кириллицей в пути.
+    with tempfile.TemporaryDirectory(prefix="pawn_compile_") as temp:
+        workdir = Path(temp)
+
+        # Внутреннее ASCII-имя исключает проблемы pawncc с кириллицей.
         source = workdir / "gamemode.pwn"
-        output_name = f"{Path(filename).stem}.amx"
-        output = workdir / output_name
+        output_name = f"{Path(original_name).stem}.amx"
+        output = workdir / "gamemode.amx"
 
         try:
             download_telegram_file(document["file_id"], source)
             source_data = source.read_bytes()
             includes = scan_includes(source_data)
 
-            edit_message(
-                chat_id,
-                status_id,
-                "Компилирую мод…"
-                + (
-                    "\nInclude: " + ", ".join(includes[:8])
-                    if includes
-                    else "\nInclude в исходнике не найдены."
-                ),
-            )
+            text = "Компилирую мод…"
+            if includes:
+                text += "\nInclude: " + ", ".join(includes[:10])
+            edit_message(chat_id, status_id, text)
 
-            return_code, compiler_log = compile_pwn(source, output)
-            amx = locate_amx(workdir, output)
+            return_code, log = compile_pwn(source, output)
 
-            if return_code != 0 or amx is None:
-                edit_message(chat_id, status_id, "Компиляция завершилась с ошибкой.")
-                send_compile_log(
-                    chat_id,
-                    message_id,
-                    f"Ошибка компиляции {filename} (код {return_code})",
-                    compiler_log,
-                )
-                return
-
-            amx_size = amx.stat().st_size
-            if amx_size > MAX_AMX_SIZE:
+            if return_code != 0 or not output.is_file():
                 edit_message(
                     chat_id,
                     status_id,
-                    f"AMX получился слишком большим: {human_size(amx_size)}.",
+                    "Компиляция завершилась с ошибкой.",
+                )
+                send_log(
+                    chat_id,
+                    message_id,
+                    f"Ошибка компиляции {original_name}, код {return_code}",
+                    log,
                 )
                 return
 
+            if output.stat().st_size > MAX_AMX_SIZE:
+                edit_message(
+                    chat_id,
+                    status_id,
+                    "Полученный AMX превышает допустимый размер.",
+                )
+                return
+
+            warning_count = sum(
+                "warning" in line.lower()
+                for line in log.splitlines()
+            )
             caption = (
                 f"Готово: {output_name}\n"
-                f"Размер: {human_size(amx_size)}"
+                f"Размер: {human_size(output.stat().st_size)}"
             )
-            if compiler_log:
-                warning_lines = [
-                    line for line in compiler_log.splitlines()
-                    if "warning" in line.lower()
-                ]
-                if warning_lines:
-                    caption += f"\nПредупреждений: {len(warning_lines)}"
+            if warning_count:
+                caption += f"\nПредупреждений: {warning_count}"
 
             send_document(
                 chat_id,
-                amx,
+                output,
                 output_name,
                 caption=caption,
-                reply_to_message_id=message_id,
+                reply_to=message_id,
             )
             delete_message(chat_id, status_id)
 
-            if compiler_log and "warning" in compiler_log.lower():
-                send_compile_log(
+            if warning_count:
+                send_log(
                     chat_id,
                     message_id,
-                    "AMX создан, но компилятор выдал предупреждения",
-                    compiler_log,
+                    "AMX создан, но есть предупреждения",
+                    log,
                 )
 
         except subprocess.TimeoutExpired:
             edit_message(
                 chat_id,
                 status_id,
-                f"Компиляция остановлена: превышен таймаут "
-                f"{COMPILE_TIMEOUT} секунд.",
+                f"Компиляция дольше {COMPILE_TIMEOUT} секунд и остановлена.",
             )
         except Exception as error:
-            logging.exception("Ошибка обработки PWN")
+            logging.exception("Ошибка компиляции")
             edit_message(
                 chat_id,
                 status_id,
@@ -882,28 +597,22 @@ def handle_message(message: dict[str, Any]) -> None:
     text = message.get("text")
     if isinstance(text, str) and text.startswith("/"):
         handle_command(message, command_name(text))
-        return
-
-    if message.get("document"):
+    elif message.get("document"):
         handle_document(message)
-        return
-
-    chat_id = int(message["chat"]["id"])
-    message_id = int(message["message_id"])
-    user_id = (message.get("from") or {}).get("id")
-
-    if allowed(user_id):
-        send_message(
-            chat_id,
-            "Отправь файл .pwn как документ.",
-            reply_to_message_id=message_id,
-        )
+    else:
+        chat_id = int(message["chat"]["id"])
+        message_id = int(message["message_id"])
+        user_id = (message.get("from") or {}).get("id")
+        if allowed(user_id):
+            send_message(
+                chat_id,
+                "Отправь файл .pwn как документ.",
+                reply_to=message_id,
+            )
 
 
 def poll_forever() -> None:
     global UPDATE_OFFSET
-
-    logging.info("Бот запущен. Long polling активен.")
 
     while True:
         try:
@@ -922,22 +631,17 @@ def poll_forever() -> None:
                     int(update["update_id"]) + 1,
                 )
                 message = update.get("message")
-                if not message:
-                    continue
+                if message:
+                    try:
+                        handle_message(message)
+                    except Exception:
+                        logging.exception("Ошибка обработки сообщения")
 
-                try:
-                    handle_message(message)
-                except Exception:
-                    logging.exception("Ошибка обработки Telegram update")
-
-        except urllib.error.HTTPError as error:
-            logging.error("HTTP error Telegram: %s", error)
-            time.sleep(5)
-        except urllib.error.URLError as error:
-            logging.error("Network error Telegram: %s", error)
-            time.sleep(5)
         except KeyboardInterrupt:
             raise
+        except (urllib.error.URLError, urllib.error.HTTPError) as error:
+            logging.error("Ошибка Telegram-соединения: %s", error)
+            time.sleep(5)
         except Exception:
             logging.error("Ошибка polling:\n%s", traceback.format_exc())
             time.sleep(5)
@@ -950,30 +654,20 @@ def main() -> None:
 
     if sys.version_info < (3, 10):
         raise RuntimeError("Нужен Python 3.10 или новее")
+    if not TOKEN or ":" not in TOKEN:
+        raise RuntimeError("Не задан BOT_TOKEN")
 
-    if not BOT_TOKEN or ":" not in BOT_TOKEN:
-        raise RuntimeError(
-            "Не найден токен Telegram-бота. "
-            "Задай BOT_TOKEN или вставь токен в TOKEN_FALLBACK."
-        )
-
-    API_BASE = f"https://api.telegram.org/bot{BOT_TOKEN}"
-    FILE_BASE = f"https://api.telegram.org/file/bot{BOT_TOKEN}"
+    API_BASE = f"https://api.telegram.org/bot{TOKEN}"
+    FILE_BASE = f"https://api.telegram.org/file/bot{TOKEN}"
 
     me = tg_api("getMe")
-    logging.info(
-        "Telegram-бот: @%s",
-        me.get("username", "unknown"),
-    )
+    logging.info("Запущен бот @%s", me.get("username", "unknown"))
 
-    try:
-        ensure_toolchain()
-    except Exception:
-        # Бот всё равно запускается: установку можно повторить через /reinstall.
-        logging.error(
-            "Toolchain не установлен при старте. "
-            "Бот запущен для показа ошибки через /status и /reinstall."
-        )
+    ok, details = compiler_diagnostics()
+    if ok:
+        logging.info("Pawn Compiler: %s", details)
+    else:
+        logging.error("Pawn Compiler не готов: %s", details)
 
     poll_forever()
 

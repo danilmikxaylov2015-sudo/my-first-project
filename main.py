@@ -1,676 +1,840 @@
-#!/usr/bin/env python3
-# -*- coding: utf-8 -*-
-
 """
-Telegram-бот-компилятор SA-MP/Open.MP:
-принимает .pwn и возвращает .amx.
+СИНДИКАТ — VK Mini App для Bothost в одном файле.
 
-Pawn Compiler и стандартные include устанавливаются Dockerfile во время деплоя.
-Сторонние include (YSI, streamer, sscanf2, a_mysql и т. п.) в комплект не входят.
+Что находится в main.py:
+- автоматическая установка FastAPI и Uvicorn при первом запуске;
+- интерфейс Mini App (HTML/CSS/JavaScript);
+- Python-сервер и игровое API;
+- SQLite-база игроков;
+- проверка подписи параметров запуска VK.
+
+НАСТРОЙКА БЕЗ .env И БЕЗ ТЕРМИНАЛА:
+1. Найдите ниже VK_APP_SECRET и вставьте защищённый ключ VK Mini App.
+2. Загрузите файл под именем main.py на Bothost.
+3. В панели Bothost включите «Использовать домен» и укажите порт 8000.
+4. В настройках VK Mini App укажите выданный Bothost HTTPS-адрес.
+
+Не публикуйте файл с настоящим VK_APP_SECRET в открытом репозитории.
 """
 
 from __future__ import annotations
 
-import io
-import json
-import logging
-import mimetypes
+import base64
+import hashlib
+import hmac
+import importlib
 import os
-import re
-import shutil
+import random
+import sqlite3
 import subprocess
 import sys
-import tempfile
 import time
-import traceback
-import urllib.error
-import urllib.parse
-import urllib.request
-import uuid
+from contextlib import contextmanager
 from pathlib import Path
-from typing import Any
+from threading import RLock
+from typing import Iterator
+from urllib.parse import parse_qsl, urlencode
 
 
-TOKEN = (
-    os.getenv("BOT_TOKEN", "8975361055:AAET6brDJIAonm58z-2CNCHG-1WEMuC0Rmc").strip()
-    or os.getenv("TELEGRAM_BOT_TOKEN", "").strip()
-    or os.getenv("TOKEN", "").strip()
+# =============================================================
+# АВТОУСТАНОВКА БИБЛИОТЕК
+# Bothost запускает main.py, а файл сам установит недостающие пакеты.
+# =============================================================
+REQUIRED_PACKAGES = (
+    "fastapi==0.139.2",
+    "uvicorn==0.51.0",
 )
 
-PAWNCC = Path(os.getenv("PAWN_COMPILER", "/usr/local/bin/pawncc"))
-INCLUDE_DIR = Path(os.getenv("PAWN_INCLUDE_DIR", "/opt/pawn/include"))
-PAWN_FLAGS = os.getenv("PAWN_FLAGS", "-d3").split()
 
-MAX_PWN_SIZE = int(os.getenv("MAX_PWN_SIZE", str(10 * 1024 * 1024)))
-MAX_AMX_SIZE = int(os.getenv("MAX_AMX_SIZE", str(48 * 1024 * 1024)))
-COMPILE_TIMEOUT = int(os.getenv("COMPILE_TIMEOUT", "60"))
-POLL_TIMEOUT = int(os.getenv("POLL_TIMEOUT", "30"))
-
-ALLOWED_USER_IDS = {
-    int(value.strip())
-    for value in os.getenv("ALLOWED_USER_IDS", "").split(",")
-    if value.strip().isdigit()
-}
-
-SAFE_NAME_RE = re.compile(r"[^A-Za-zА-Яа-яЁё0-9_.() -]+")
-INCLUDE_RE = re.compile(
-    rb'(?im)^\s*#\s*(?:try)?include\s*[<"]\s*([^>"]+?)\s*[>"]'
-)
-
-API_BASE = ""
-FILE_BASE = ""
-UPDATE_OFFSET = 0
-
-
-def setup_logging() -> None:
-    logging.basicConfig(
-        level=logging.INFO,
-        format="%(asctime)s | %(levelname)s | %(message)s",
-    )
-
-
-def allowed(user_id: int | None) -> bool:
-    return not ALLOWED_USER_IDS or (
-        user_id is not None and user_id in ALLOWED_USER_IDS
-    )
-
-
-def safe_filename(name: str, fallback: str = "gamemode.pwn") -> str:
-    result = SAFE_NAME_RE.sub("_", Path(name).name[:120]).strip(" .")
-    return result or fallback
-
-
-def human_size(size: int) -> str:
-    value = float(size)
-    for unit in ("Б", "КБ", "МБ", "ГБ"):
-        if value < 1024 or unit == "ГБ":
-            return f"{int(value)} {unit}" if unit == "Б" else f"{value:.1f} {unit}"
-        value /= 1024
-    return f"{size} Б"
-
-
-def request_json(
-    url: str,
-    data: dict[str, Any] | None = None,
-    timeout: int = 90,
-) -> dict[str, Any]:
-    headers = {
-        "User-Agent": "BothostPawnCompilerBot/2.0",
-        "Accept": "application/json",
-    }
-    body = None
-
-    if data is not None:
-        body = urllib.parse.urlencode(
-            {
-                key: json.dumps(value, ensure_ascii=False)
-                if isinstance(value, (dict, list))
-                else str(value)
-                for key, value in data.items()
-                if value is not None
-            }
-        ).encode("utf-8")
-        headers["Content-Type"] = "application/x-www-form-urlencoded"
-
-    request = urllib.request.Request(url, data=body, headers=headers)
-    with urllib.request.urlopen(request, timeout=timeout) as response:
-        result = json.loads(response.read().decode("utf-8", errors="replace"))
-
-    if not isinstance(result, dict):
-        raise RuntimeError("Telegram вернул некорректный JSON")
-    return result
-
-
-def tg_api(method: str, data: dict[str, Any] | None = None) -> Any:
-    response = request_json(
-        f"{API_BASE}/{method}",
-        data or {},
-        timeout=max(90, POLL_TIMEOUT + 15),
-    )
-    if not response.get("ok"):
-        raise RuntimeError(
-            f"Telegram API {method}: "
-            f"{response.get('description', 'неизвестная ошибка')}"
-        )
-    return response.get("result")
-
-
-def send_message(
-    chat_id: int,
-    text: str,
-    *,
-    reply_to: int | None = None,
-) -> dict[str, Any]:
-    payload: dict[str, Any] = {
-        "chat_id": chat_id,
-        "text": text[:4096],
-        "disable_web_page_preview": True,
-    }
-    if reply_to:
-        payload["reply_parameters"] = {
-            "message_id": reply_to,
-            "allow_sending_without_reply": True,
-        }
-    return tg_api("sendMessage", payload)
-
-
-def edit_message(chat_id: int, message_id: int, text: str) -> None:
+def ensure_dependencies() -> None:
     try:
-        tg_api(
-            "editMessageText",
-            {
-                "chat_id": chat_id,
-                "message_id": message_id,
-                "text": text[:4096],
-            },
-        )
-    except Exception:
-        logging.exception("Не удалось изменить сообщение")
-
-
-def delete_message(chat_id: int, message_id: int) -> None:
-    try:
-        tg_api(
-            "deleteMessage",
-            {"chat_id": chat_id, "message_id": message_id},
-        )
-    except Exception:
+        import fastapi  # noqa: F401
+        import pydantic  # noqa: F401
+        import uvicorn  # noqa: F401
+        return
+    except ModuleNotFoundError:
         pass
 
-
-def multipart_body(
-    fields: dict[str, Any],
-    field_name: str,
-    file_path: Path,
-    sent_name: str,
-) -> tuple[bytes, str]:
-    boundary = f"----PawnBot{uuid.uuid4().hex}"
-    output = io.BytesIO()
-
-    for name, value in fields.items():
-        if value is None:
-            continue
-        if isinstance(value, (dict, list)):
-            value = json.dumps(value, ensure_ascii=False)
-
-        output.write(f"--{boundary}\r\n".encode())
-        output.write(
-            f'Content-Disposition: form-data; name="{name}"\r\n\r\n'.encode()
+    print("[SETUP] Устанавливаю FastAPI и Uvicorn автоматически...", flush=True)
+    try:
+        subprocess.check_call(
+            [
+                sys.executable,
+                "-m",
+                "pip",
+                "install",
+                "--disable-pip-version-check",
+                "--no-cache-dir",
+                *REQUIRED_PACKAGES,
+            ]
         )
-        output.write(str(value).encode("utf-8"))
-        output.write(b"\r\n")
+    except Exception as exc:
+        raise RuntimeError(
+            "Не удалось автоматически установить библиотеки. "
+            "Проверьте логи сборки Bothost."
+        ) from exc
 
-    mime = mimetypes.guess_type(sent_name)[0] or "application/octet-stream"
-    output.write(f"--{boundary}\r\n".encode())
-    output.write(
-        (
-            f'Content-Disposition: form-data; name="{field_name}"; '
-            f'filename="{sent_name}"\r\n'
-        ).encode("utf-8")
-    )
-    output.write(f"Content-Type: {mime}\r\n\r\n".encode())
-
-    with file_path.open("rb") as source:
-        shutil.copyfileobj(source, output)
-
-    output.write(b"\r\n")
-    output.write(f"--{boundary}--\r\n".encode())
-    return output.getvalue(), boundary
+    importlib.invalidate_caches()
+    print("[SETUP] Библиотеки установлены. Перезапускаю приложение...", flush=True)
+    os.execv(sys.executable, [sys.executable, *sys.argv])
 
 
-def send_document(
-    chat_id: int,
-    file_path: Path,
-    sent_name: str,
-    *,
-    caption: str = "",
-    reply_to: int | None = None,
-) -> None:
-    fields: dict[str, Any] = {
-        "chat_id": chat_id,
-        "caption": caption[:1024],
-    }
-    if reply_to:
-        fields["reply_parameters"] = {
-            "message_id": reply_to,
-            "allow_sending_without_reply": True,
+ensure_dependencies()
+
+from fastapi import FastAPI, HTTPException
+from fastapi.responses import HTMLResponse
+from pydantic import BaseModel, Field
+import uvicorn
+
+
+# =============================================================
+# НАСТРОЙКИ — ВСТАВЬ КЛЮЧ ПРЯМО СЮДА
+# =============================================================
+APP_TITLE = "СИНДИКАТ"
+VK_APP_SECRET = "qPWcQYjIDRKw6n2s1kgm"
+DEV_MODE = False
+
+# Bothost сам передаёт PORT из панели. Файл .env для этого не нужен.
+PORT = int(os.environ.get("PORT", "8000"))
+ENERGY_REGEN_SECONDS = 5 * 60
+
+# На Bothost /app/data используется для постоянного хранения файлов.
+DATA_DIR = Path("/app/data") if Path("/app").is_dir() else Path(__file__).with_name("data")
+DATA_DIR.mkdir(parents=True, exist_ok=True)
+DB_PATH = DATA_DIR / "vk_miniapp_game.db"
+
+SECRET_IS_CONFIGURED = bool(
+    VK_APP_SECRET.strip()
+    and not VK_APP_SECRET.startswith("ВСТАВЬ_")
+)
+
+app = FastAPI(title=APP_TITLE, docs_url=None, redoc_url=None)
+
+
+class LaunchRequest(BaseModel):
+    launch_params: str = ""
+
+
+class GameRequest(LaunchRequest):
+    item: str | None = Field(default=None, max_length=32)
+
+
+class GameDB:
+    def __init__(self, path: Path) -> None:
+        self.lock = RLock()
+        self.conn = sqlite3.connect(path, check_same_thread=False)
+        self.conn.row_factory = sqlite3.Row
+        self.conn.execute("PRAGMA journal_mode=WAL")
+        self.conn.execute("PRAGMA busy_timeout=5000")
+        self._create_tables()
+
+    def _create_tables(self) -> None:
+        with self.lock, self.conn:
+            self.conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS players (
+                    vk_id INTEGER PRIMARY KEY,
+                    name TEXT NOT NULL,
+                    level INTEGER NOT NULL DEFAULT 1,
+                    xp INTEGER NOT NULL DEFAULT 0,
+                    money INTEGER NOT NULL DEFAULT 500,
+                    energy INTEGER NOT NULL DEFAULT 10,
+                    max_energy INTEGER NOT NULL DEFAULT 10,
+                    energy_updated INTEGER NOT NULL,
+                    hp INTEGER NOT NULL DEFAULT 100,
+                    max_hp INTEGER NOT NULL DEFAULT 100,
+                    attack INTEGER NOT NULL DEFAULT 10,
+                    defense INTEGER NOT NULL DEFAULT 2,
+                    medkits INTEGER NOT NULL DEFAULT 1,
+                    wins INTEGER NOT NULL DEFAULT 0,
+                    losses INTEGER NOT NULL DEFAULT 0,
+                    rating INTEGER NOT NULL DEFAULT 1000,
+                    last_daily_day INTEGER NOT NULL DEFAULT 0,
+                    created_at INTEGER NOT NULL
+                )
+                """
+            )
+
+    @contextmanager
+    def transaction(self) -> Iterator[sqlite3.Cursor]:
+        with self.lock:
+            cursor = self.conn.cursor()
+            try:
+                cursor.execute("BEGIN IMMEDIATE")
+                yield cursor
+                self.conn.commit()
+            except Exception:
+                self.conn.rollback()
+                raise
+            finally:
+                cursor.close()
+
+    def ensure_player(self, vk_id: int, name: str) -> None:
+        now = int(time.time())
+        safe_name = (name or f"Игрок {vk_id}").strip()[:40]
+        with self.lock, self.conn:
+            self.conn.execute(
+                """
+                INSERT OR IGNORE INTO players
+                (vk_id, name, energy_updated, created_at)
+                VALUES (?, ?, ?, ?)
+                """,
+                (vk_id, safe_name, now, now),
+            )
+            self.conn.execute(
+                "UPDATE players SET name = ? WHERE vk_id = ?",
+                (safe_name, vk_id),
+            )
+
+    def _prepare(self, cur: sqlite3.Cursor, vk_id: int) -> sqlite3.Row:
+        row = cur.execute("SELECT * FROM players WHERE vk_id = ?", (vk_id,)).fetchone()
+        if row is None:
+            raise LookupError("Игрок не найден")
+
+        now = int(time.time())
+        if row["energy"] < row["max_energy"]:
+            gained = max(0, (now - row["energy_updated"]) // ENERGY_REGEN_SECONDS)
+            if gained:
+                energy = min(row["max_energy"], row["energy"] + gained)
+                updated = now if energy >= row["max_energy"] else (
+                    row["energy_updated"] + gained * ENERGY_REGEN_SECONDS
+                )
+                cur.execute(
+                    "UPDATE players SET energy = ?, energy_updated = ? WHERE vk_id = ?",
+                    (energy, updated, vk_id),
+                )
+
+        return cur.execute("SELECT * FROM players WHERE vk_id = ?", (vk_id,)).fetchone()
+
+    @staticmethod
+    def serialize(row: sqlite3.Row) -> dict:
+        next_level_xp = row["level"] * 100
+        return {
+            "vk_id": row["vk_id"],
+            "name": row["name"],
+            "level": row["level"],
+            "xp": row["xp"],
+            "next_level_xp": next_level_xp,
+            "money": row["money"],
+            "energy": row["energy"],
+            "max_energy": row["max_energy"],
+            "hp": row["hp"],
+            "max_hp": row["max_hp"],
+            "attack": row["attack"],
+            "defense": row["defense"],
+            "medkits": row["medkits"],
+            "wins": row["wins"],
+            "losses": row["losses"],
+            "rating": row["rating"],
         }
 
-    body, boundary = multipart_body(
-        fields,
-        "document",
-        file_path,
-        sent_name,
-    )
+    def profile(self, vk_id: int) -> dict:
+        with self.transaction() as cur:
+            return self.serialize(self._prepare(cur, vk_id))
 
-    request = urllib.request.Request(
-        f"{API_BASE}/sendDocument",
-        data=body,
-        headers={
-            "User-Agent": "BothostPawnCompilerBot/2.0",
-            "Content-Type": f"multipart/form-data; boundary={boundary}",
-            "Content-Length": str(len(body)),
-        },
-    )
+    def battle(self, vk_id: int) -> tuple[dict, dict]:
+        with self.transaction() as cur:
+            row = self._prepare(cur, vk_id)
+            if row["energy"] < 1:
+                raise ValueError("Недостаточно энергии. Одна единица восстановится через 5 минут.")
+            if row["hp"] <= 0:
+                raise ValueError("Сначала восстанови здоровье аптечкой.")
 
-    with urllib.request.urlopen(request, timeout=120) as response:
-        result = json.loads(response.read().decode("utf-8", errors="replace"))
+            enemy_level = max(1, row["level"] + random.choice([-1, 0, 0, 1]))
+            enemy_names = ["Уличный рейдер", "Дрон охраны", "Наёмник", "Кибер-громила"]
+            enemy_name = random.choice(enemy_names)
+            enemy_hp = 45 + enemy_level * 12 + random.randint(-5, 8)
+            enemy_attack = 7 + enemy_level * 3
 
-    if not result.get("ok"):
-        raise RuntimeError(
-            f"Telegram sendDocument: "
-            f"{result.get('description', 'неизвестная ошибка')}"
-        )
+            player_hp = row["hp"]
+            start_hp = player_hp
+            rounds = 0
+            log: list[str] = []
 
-
-def download_telegram_file(file_id: str, destination: Path) -> None:
-    info = tg_api("getFile", {"file_id": file_id})
-    remote_path = info.get("file_path")
-    size = int(info.get("file_size") or 0)
-
-    if not remote_path:
-        raise RuntimeError("Telegram не вернул путь к файлу")
-    if size and size > MAX_PWN_SIZE:
-        raise RuntimeError(
-            f"Файл весит {human_size(size)}, лимит — {human_size(MAX_PWN_SIZE)}"
-        )
-
-    request = urllib.request.Request(
-        f"{FILE_BASE}/{remote_path}",
-        headers={"User-Agent": "BothostPawnCompilerBot/2.0"},
-    )
-
-    total = 0
-    with urllib.request.urlopen(request, timeout=120) as response:
-        with destination.open("wb") as output:
-            while True:
-                chunk = response.read(256 * 1024)
-                if not chunk:
+            while player_hp > 0 and enemy_hp > 0 and rounds < 20:
+                rounds += 1
+                player_damage = max(1, row["attack"] + random.randint(-2, 5))
+                enemy_hp -= player_damage
+                log.append(f"Ты нанёс {player_damage} урона")
+                if enemy_hp <= 0:
                     break
-                total += len(chunk)
-                if total > MAX_PWN_SIZE:
-                    raise RuntimeError("Превышен лимит размера PWN")
-                output.write(chunk)
+
+                enemy_damage = max(1, enemy_attack + random.randint(-2, 3) - row["defense"])
+                player_hp -= enemy_damage
+                log.append(f"Враг нанёс {enemy_damage} урона")
+
+            won = enemy_hp <= 0
+            hp_after = max(0, player_hp)
+            spent_hp = start_hp - hp_after
+
+            if won:
+                reward = random.randint(80, 135) + enemy_level * 15
+                gained_xp = random.randint(24, 38) + enemy_level * 3
+                new_xp = row["xp"] + gained_xp
+                new_level = row["level"]
+                max_hp = row["max_hp"]
+                max_energy = row["max_energy"]
+                attack = row["attack"]
+
+                while new_xp >= new_level * 100:
+                    new_xp -= new_level * 100
+                    new_level += 1
+                    max_hp += 10
+                    max_energy += 1
+                    attack += 2
+                    hp_after = max_hp
+
+                cur.execute(
+                    """
+                    UPDATE players
+                    SET energy = energy - 1,
+                        energy_updated = CASE WHEN energy = max_energy THEN ? ELSE energy_updated END,
+                        hp = ?, money = money + ?, xp = ?, level = ?,
+                        max_hp = ?, max_energy = ?, attack = ?,
+                        wins = wins + 1, rating = rating + ?
+                    WHERE vk_id = ?
+                    """,
+                    (
+                        int(time.time()), hp_after, reward, new_xp, new_level,
+                        max_hp, max_energy, attack, 8 + enemy_level, vk_id,
+                    ),
+                )
+                result = {
+                    "won": True,
+                    "title": "Победа!",
+                    "text": f"{enemy_name} повержен. +{reward} кредитов, +{gained_xp} опыта.",
+                    "enemy": enemy_name,
+                    "rounds": rounds,
+                    "damage_taken": spent_hp,
+                    "log": log[-6:],
+                }
+            else:
+                cur.execute(
+                    """
+                    UPDATE players
+                    SET energy = energy - 1,
+                        energy_updated = CASE WHEN energy = max_energy THEN ? ELSE energy_updated END,
+                        hp = 0, losses = losses + 1,
+                        rating = MAX(0, rating - 10)
+                    WHERE vk_id = ?
+                    """,
+                    (int(time.time()), vk_id),
+                )
+                result = {
+                    "won": False,
+                    "title": "Поражение",
+                    "text": f"{enemy_name} оказался сильнее. Используй аптечку и улучши снаряжение.",
+                    "enemy": enemy_name,
+                    "rounds": rounds,
+                    "damage_taken": start_hp,
+                    "log": log[-6:],
+                }
+
+            updated = self._prepare(cur, vk_id)
+            return self.serialize(updated), result
+
+    def daily(self, vk_id: int) -> tuple[dict, str]:
+        day = int(time.time() // 86400)
+        with self.transaction() as cur:
+            row = self._prepare(cur, vk_id)
+            if row["last_daily_day"] == day:
+                raise ValueError("Сегодня ежедневная награда уже получена.")
+            reward = 250 + row["level"] * 25
+            cur.execute(
+                "UPDATE players SET money = money + ?, last_daily_day = ? WHERE vk_id = ?",
+                (reward, day, vk_id),
+            )
+            return self.serialize(self._prepare(cur, vk_id)), f"Получено {reward} кредитов."
+
+    def heal(self, vk_id: int) -> tuple[dict, str]:
+        with self.transaction() as cur:
+            row = self._prepare(cur, vk_id)
+            if row["medkits"] < 1:
+                raise ValueError("Аптечек нет. Купи аптечку в магазине.")
+            if row["hp"] >= row["max_hp"]:
+                raise ValueError("Здоровье уже полное.")
+            healed = min(60, row["max_hp"] - row["hp"])
+            cur.execute(
+                "UPDATE players SET hp = hp + ?, medkits = medkits - 1 WHERE vk_id = ?",
+                (healed, vk_id),
+            )
+            return self.serialize(self._prepare(cur, vk_id)), f"Восстановлено {healed} HP."
+
+    def buy(self, vk_id: int, item: str) -> tuple[dict, str]:
+        prices = {"weapon": 700, "armor": 600, "medkit": 180}
+        if item not in prices:
+            raise ValueError("Неизвестный товар.")
+        price = prices[item]
+
+        with self.transaction() as cur:
+            row = self._prepare(cur, vk_id)
+            if row["money"] < price:
+                raise ValueError(f"Нужно {price} кредитов.")
+
+            if item == "weapon":
+                cur.execute(
+                    "UPDATE players SET money = money - ?, attack = attack + 3 WHERE vk_id = ?",
+                    (price, vk_id),
+                )
+                message = "Оружие улучшено: +3 к атаке."
+            elif item == "armor":
+                cur.execute(
+                    "UPDATE players SET money = money - ?, defense = defense + 2 WHERE vk_id = ?",
+                    (price, vk_id),
+                )
+                message = "Броня улучшена: +2 к защите."
+            else:
+                cur.execute(
+                    "UPDATE players SET money = money - ?, medkits = medkits + 1 WHERE vk_id = ?",
+                    (price, vk_id),
+                )
+                message = "Аптечка добавлена в инвентарь."
+
+            return self.serialize(self._prepare(cur, vk_id)), message
+
+    def leaderboard(self) -> list[dict]:
+        with self.lock:
+            rows = self.conn.execute(
+                """
+                SELECT vk_id, name, level, rating, wins
+                FROM players
+                ORDER BY rating DESC, wins DESC, level DESC
+                LIMIT 10
+                """
+            ).fetchall()
+            return [dict(row) for row in rows]
 
 
-def compiler_diagnostics() -> tuple[bool, str]:
-    if not PAWNCC.exists():
-        return False, f"Файл компилятора не найден: {PAWNCC}"
-    if not os.access(PAWNCC, os.X_OK):
-        return False, f"Нет права на запуск компилятора: {PAWNCC}"
-    if not INCLUDE_DIR.is_dir():
-        return False, f"Папка include не найдена: {INCLUDE_DIR}"
-    if not (INCLUDE_DIR / "a_samp.inc").exists():
-        return False, f"Не найден {INCLUDE_DIR / 'a_samp.inc'}"
+db = GameDB(DB_PATH)
 
-    environment = os.environ.copy()
-    environment["LD_LIBRARY_PATH"] = (
-        "/usr/local/lib"
-        + (
-            os.pathsep + environment["LD_LIBRARY_PATH"]
-            if environment.get("LD_LIBRARY_PATH")
-            else ""
-        )
-    )
 
+def verify_launch_params(raw_params: str) -> dict[str, str]:
+    params = dict(parse_qsl(raw_params.lstrip("?"), keep_blank_values=True))
+
+    if DEV_MODE and "dev_user_id" in params:
+        try:
+            dev_id = int(params["dev_user_id"])
+        except ValueError as exc:
+            raise HTTPException(400, "Некорректный dev_user_id") from exc
+        return {"vk_user_id": str(dev_id), "vk_first_name": "Тестовый", "vk_last_name": "Игрок"}
+
+    if not SECRET_IS_CONFIGURED:
+        raise HTTPException(500, "В main.py не вставлен VK_APP_SECRET")
+
+    received_sign = params.get("sign", "")
+    if not received_sign:
+        raise HTTPException(401, "В параметрах запуска отсутствует подпись VK")
+
+    vk_params = sorted((key, value) for key, value in params.items() if key.startswith("vk_"))
+    query_string = urlencode(vk_params)
+    digest = hmac.new(
+        VK_APP_SECRET.encode("utf-8"),
+        query_string.encode("utf-8"),
+        hashlib.sha256,
+    ).digest()
+    expected_sign = base64.urlsafe_b64encode(digest).decode("utf-8").rstrip("=")
+
+    if not hmac.compare_digest(expected_sign, received_sign):
+        raise HTTPException(401, "Подпись параметров запуска VK не прошла проверку")
+
+    if "vk_user_id" not in params:
+        raise HTTPException(401, "Не найден vk_user_id")
+    return params
+
+
+def get_identity(raw_params: str) -> tuple[int, str]:
+    params = verify_launch_params(raw_params)
     try:
-        result = subprocess.run(
-            [str(PAWNCC)],
-            stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT,
-            timeout=10,
-            env=environment,
-            check=False,
-        )
-    except Exception as error:
-        return False, f"{type(error).__name__}: {error}"
+        vk_id = int(params["vk_user_id"])
+    except (KeyError, ValueError) as exc:
+        raise HTTPException(401, "Некорректный ID пользователя") from exc
 
-    text = result.stdout.decode("utf-8", errors="replace").strip()
-    first_line = text.splitlines()[0] if text else "pawncc запускается"
-    return True, first_line
+    first = params.get("vk_first_name", "")
+    last = params.get("vk_last_name", "")
+    name = f"{first} {last}".strip() or f"Игрок {vk_id}"
+    return vk_id, name
 
 
-def scan_includes(data: bytes) -> list[str]:
-    result: list[str] = []
-    for match in INCLUDE_RE.finditer(data):
-        name = match.group(1).decode("utf-8", errors="replace").strip()
-        if name and name not in result:
-            result.append(name)
-    return result[:50]
+def success(player: dict | None = None, message: str = "", **extra: object) -> dict:
+    payload: dict[str, object] = {"ok": True, "message": message}
+    if player is not None:
+        payload["player"] = player
+    payload.update(extra)
+    return payload
 
 
-def compile_pwn(source: Path, output: Path) -> tuple[int, str]:
-    environment = os.environ.copy()
-    environment["LD_LIBRARY_PATH"] = (
-        "/usr/local/lib"
-        + (
-            os.pathsep + environment["LD_LIBRARY_PATH"]
-            if environment.get("LD_LIBRARY_PATH")
-            else ""
-        )
-    )
+def run_game_action(request: GameRequest, action: str) -> dict:
+    vk_id, name = get_identity(request.launch_params)
+    db.ensure_player(vk_id, name)
+    try:
+        if action == "battle":
+            player, battle = db.battle(vk_id)
+            return success(player, battle["text"], battle=battle)
+        if action == "daily":
+            player, message = db.daily(vk_id)
+            return success(player, message)
+        if action == "heal":
+            player, message = db.heal(vk_id)
+            return success(player, message)
+        if action == "buy":
+            player, message = db.buy(vk_id, request.item or "")
+            return success(player, message)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    raise HTTPException(404, "Действие не найдено")
 
-    command = [
-        str(PAWNCC),
-        str(source),
-        f"-i{source.parent}{os.sep}",
-        f"-i{INCLUDE_DIR}{os.sep}",
-        f"-o{output}",
-        *PAWN_FLAGS,
-    ]
 
-    kwargs: dict[str, Any] = {
-        "cwd": str(source.parent),
-        "stdout": subprocess.PIPE,
-        "stderr": subprocess.STDOUT,
-        "timeout": COMPILE_TIMEOUT,
-        "env": environment,
-        "check": False,
+@app.get("/", response_class=HTMLResponse)
+def index() -> HTMLResponse:
+    return HTMLResponse(INDEX_HTML)
+
+
+@app.get("/health")
+def health() -> dict:
+    return {
+        "ok": True,
+        "service": APP_TITLE,
+        "port": PORT,
+        "database": str(DB_PATH),
+        "vk_secret_configured": SECRET_IS_CONFIGURED,
     }
 
-    if os.name == "posix":
-        def apply_limits() -> None:
-            try:
-                import resource
-                resource.setrlimit(resource.RLIMIT_CPU, (45, 45))
-                resource.setrlimit(
-                    resource.RLIMIT_FSIZE,
-                    (MAX_AMX_SIZE, MAX_AMX_SIZE),
-                )
-                resource.setrlimit(resource.RLIMIT_NOFILE, (64, 64))
-            except Exception:
-                pass
 
-        kwargs["preexec_fn"] = apply_limits
-
-    result = subprocess.run(command, **kwargs)
-    log = result.stdout.decode("utf-8", errors="replace").strip()
-    return result.returncode, log
+@app.post("/api/init")
+def api_init(request: LaunchRequest) -> dict:
+    vk_id, name = get_identity(request.launch_params)
+    db.ensure_player(vk_id, name)
+    return success(db.profile(vk_id), "Игра загружена", leaderboard=db.leaderboard())
 
 
-def send_log(
-    chat_id: int,
-    reply_to: int,
-    title: str,
-    log: str,
-) -> None:
-    full_text = f"{title}\n\n{log.strip() or 'Компилятор не вернул лог.'}"
-
-    if len(full_text) <= 4000:
-        send_message(chat_id, full_text, reply_to=reply_to)
-        return
-
-    with tempfile.TemporaryDirectory(prefix="pawn_log_") as temp:
-        log_file = Path(temp) / "compile.log"
-        log_file.write_text(full_text, encoding="utf-8")
-        send_document(
-            chat_id,
-            log_file,
-            "compile.log",
-            caption=title,
-            reply_to=reply_to,
-        )
+@app.post("/api/battle")
+def api_battle(request: GameRequest) -> dict:
+    return run_game_action(request, "battle")
 
 
-def command_name(text: str) -> str:
-    first = text.strip().split(maxsplit=1)[0].lower()
-    return first.split("@", maxsplit=1)[0]
+@app.post("/api/daily")
+def api_daily(request: GameRequest) -> dict:
+    return run_game_action(request, "daily")
 
 
-def handle_command(message: dict[str, Any], command: str) -> None:
-    chat_id = int(message["chat"]["id"])
-    message_id = int(message["message_id"])
-    user_id = (message.get("from") or {}).get("id")
-
-    if not allowed(user_id):
-        send_message(chat_id, "У вас нет доступа к боту.", reply_to=message_id)
-        return
-
-    if command in {"/start", "/help"}:
-        send_message(
-            chat_id,
-            "Отправь SA-MP/Open.MP мод с расширением .pwn как документ.\n\n"
-            "Бот скомпилирует его и пришлёт готовый .amx.\n\n"
-            "/status — проверить компилятор\n\n"
-            "Стандартные include уже установлены. Если мод использует YSI, "
-            "streamer, sscanf2, a_mysql или другие сторонние include, "
-            "их нужно отдельно добавить в Dockerfile.",
-            reply_to=message_id,
-        )
-        return
-
-    if command == "/status":
-        ok, details = compiler_diagnostics()
-        include_count = (
-            len(list(INCLUDE_DIR.rglob("*.inc")))
-            if INCLUDE_DIR.is_dir()
-            else 0
-        )
-        send_message(
-            chat_id,
-            ("Компилятор работает." if ok else "Компилятор НЕ работает.")
-            + f"\n\n{details}"
-            + f"\nInclude-файлов: {include_count}"
-            + f"\nПуть: {PAWNCC}",
-            reply_to=message_id,
-        )
-        return
-
-    send_message(chat_id, "Неизвестная команда.", reply_to=message_id)
+@app.post("/api/heal")
+def api_heal(request: GameRequest) -> dict:
+    return run_game_action(request, "heal")
 
 
-def handle_document(message: dict[str, Any]) -> None:
-    chat_id = int(message["chat"]["id"])
-    message_id = int(message["message_id"])
-    user_id = (message.get("from") or {}).get("id")
-
-    if not allowed(user_id):
-        send_message(chat_id, "У вас нет доступа к боту.", reply_to=message_id)
-        return
-
-    document = message.get("document") or {}
-    original_name = safe_filename(
-        document.get("file_name") or "gamemode.pwn"
-    )
-
-    if Path(original_name).suffix.lower() != ".pwn":
-        send_message(
-            chat_id,
-            "Нужен файл с расширением .pwn.",
-            reply_to=message_id,
-        )
-        return
-
-    declared_size = int(document.get("file_size") or 0)
-    if declared_size > MAX_PWN_SIZE:
-        send_message(
-            chat_id,
-            f"Файл слишком большой: {human_size(declared_size)}.",
-            reply_to=message_id,
-        )
-        return
-
-    compiler_ok, compiler_info = compiler_diagnostics()
-    if not compiler_ok:
-        send_message(
-            chat_id,
-            "Компилятор не запустился:\n\n"
-            f"{compiler_info}\n\n"
-            "Проверь, что проект развёрнут именно через новый Dockerfile.",
-            reply_to=message_id,
-        )
-        return
-
-    status = send_message(
-        chat_id,
-        "Скачиваю PWN…",
-        reply_to=message_id,
-    )
-    status_id = int(status["message_id"])
-
-    with tempfile.TemporaryDirectory(prefix="pawn_compile_") as temp:
-        workdir = Path(temp)
-
-        # Внутреннее ASCII-имя исключает проблемы pawncc с кириллицей.
-        source = workdir / "gamemode.pwn"
-        output_name = f"{Path(original_name).stem}.amx"
-        output = workdir / "gamemode.amx"
-
-        try:
-            download_telegram_file(document["file_id"], source)
-            source_data = source.read_bytes()
-            includes = scan_includes(source_data)
-
-            text = "Компилирую мод…"
-            if includes:
-                text += "\nInclude: " + ", ".join(includes[:10])
-            edit_message(chat_id, status_id, text)
-
-            return_code, log = compile_pwn(source, output)
-
-            if return_code != 0 or not output.is_file():
-                edit_message(
-                    chat_id,
-                    status_id,
-                    "Компиляция завершилась с ошибкой.",
-                )
-                send_log(
-                    chat_id,
-                    message_id,
-                    f"Ошибка компиляции {original_name}, код {return_code}",
-                    log,
-                )
-                return
-
-            if output.stat().st_size > MAX_AMX_SIZE:
-                edit_message(
-                    chat_id,
-                    status_id,
-                    "Полученный AMX превышает допустимый размер.",
-                )
-                return
-
-            warning_count = sum(
-                "warning" in line.lower()
-                for line in log.splitlines()
-            )
-            caption = (
-                f"Готово: {output_name}\n"
-                f"Размер: {human_size(output.stat().st_size)}"
-            )
-            if warning_count:
-                caption += f"\nПредупреждений: {warning_count}"
-
-            send_document(
-                chat_id,
-                output,
-                output_name,
-                caption=caption,
-                reply_to=message_id,
-            )
-            delete_message(chat_id, status_id)
-
-            if warning_count:
-                send_log(
-                    chat_id,
-                    message_id,
-                    "AMX создан, но есть предупреждения",
-                    log,
-                )
-
-        except subprocess.TimeoutExpired:
-            edit_message(
-                chat_id,
-                status_id,
-                f"Компиляция дольше {COMPILE_TIMEOUT} секунд и остановлена.",
-            )
-        except Exception as error:
-            logging.exception("Ошибка компиляции")
-            edit_message(
-                chat_id,
-                status_id,
-                f"Ошибка:\n{type(error).__name__}: {error}",
-            )
+@app.post("/api/buy")
+def api_buy(request: GameRequest) -> dict:
+    return run_game_action(request, "buy")
 
 
-def handle_message(message: dict[str, Any]) -> None:
-    text = message.get("text")
-    if isinstance(text, str) and text.startswith("/"):
-        handle_command(message, command_name(text))
-    elif message.get("document"):
-        handle_document(message)
-    else:
-        chat_id = int(message["chat"]["id"])
-        message_id = int(message["message_id"])
-        user_id = (message.get("from") or {}).get("id")
-        if allowed(user_id):
-            send_message(
-                chat_id,
-                "Отправь файл .pwn как документ.",
-                reply_to=message_id,
-            )
+@app.post("/api/leaderboard")
+def api_leaderboard(request: LaunchRequest) -> dict:
+    vk_id, name = get_identity(request.launch_params)
+    db.ensure_player(vk_id, name)
+    return success(leaderboard=db.leaderboard())
 
 
-def poll_forever() -> None:
-    global UPDATE_OFFSET
+INDEX_HTML = r'''<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="theme-color" content="#090d18">
+  <title>СИНДИКАТ</title>
+  <script src="https://unpkg.com/@vkontakte/vk-bridge/dist/browser.min.js"></script>
+  <style>
+    :root {
+      --bg: #070a12;
+      --panel: #101625;
+      --panel-2: #171f33;
+      --line: rgba(255,255,255,.09);
+      --text: #f5f7ff;
+      --muted: #99a4bc;
+      --accent: #7c5cff;
+      --accent-2: #00d6c9;
+      --danger: #ff4d6d;
+      --success: #39dd91;
+      --shadow: 0 18px 50px rgba(0,0,0,.35);
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      min-height: 100vh;
+      color: var(--text);
+      background:
+        radial-gradient(circle at 15% -10%, rgba(124,92,255,.25), transparent 34%),
+        radial-gradient(circle at 100% 20%, rgba(0,214,201,.14), transparent 28%),
+        var(--bg);
+      font-family: Inter, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    }
+    button { font: inherit; }
+    .app { width: min(100%, 760px); margin: 0 auto; padding: 18px 16px 110px; }
+    .topbar { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+    .brand small { color: var(--accent-2); letter-spacing: .18em; font-weight: 800; }
+    .brand h1 { margin: 3px 0 0; font-size: 26px; letter-spacing: .03em; }
+    .avatar {
+      width: 48px; height: 48px; border-radius: 16px; display: grid; place-items: center;
+      background: linear-gradient(145deg, var(--accent), #3b2d8e); font-weight: 900;
+      box-shadow: 0 10px 30px rgba(124,92,255,.28);
+    }
+    .hero {
+      margin-top: 18px; padding: 18px; border: 1px solid var(--line); border-radius: 24px;
+      background: linear-gradient(145deg, rgba(23,31,51,.95), rgba(13,18,31,.95));
+      box-shadow: var(--shadow); overflow: hidden; position: relative;
+    }
+    .hero::after {
+      content: ""; position: absolute; width: 180px; height: 180px; right: -70px; top: -90px;
+      border: 1px solid rgba(0,214,201,.24); border-radius: 50%; box-shadow: 0 0 50px rgba(0,214,201,.08);
+    }
+    .level-row, .bar-label, .stats-grid, .section-title { display: flex; justify-content: space-between; align-items: center; gap: 10px; }
+    .level-badge { color: var(--accent-2); font-weight: 800; }
+    .player-name { font-size: 22px; font-weight: 800; margin-top: 6px; }
+    .bar-label { margin-top: 15px; color: var(--muted); font-size: 13px; }
+    .bar { height: 10px; background: rgba(255,255,255,.07); border-radius: 999px; overflow: hidden; margin-top: 7px; }
+    .bar > span { height: 100%; display: block; border-radius: inherit; transition: width .3s ease; }
+    .xp { background: linear-gradient(90deg, var(--accent), #a790ff); }
+    .hp { background: linear-gradient(90deg, var(--danger), #ff8298); }
+    .energy { background: linear-gradient(90deg, var(--accent-2), #68fff4); }
+    .stats-grid { margin-top: 15px; align-items: stretch; }
+    .stat { flex: 1; padding: 12px; border-radius: 16px; background: rgba(255,255,255,.045); border: 1px solid var(--line); }
+    .stat span { display: block; color: var(--muted); font-size: 12px; }
+    .stat strong { display: block; margin-top: 4px; font-size: 18px; }
+    .section { margin-top: 22px; }
+    .section-title h2 { margin: 0; font-size: 18px; }
+    .section-title span { color: var(--muted); font-size: 13px; }
+    .battle-card {
+      margin-top: 12px; padding: 18px; border-radius: 22px; border: 1px solid rgba(255,77,109,.25);
+      background: linear-gradient(145deg, rgba(255,77,109,.10), rgba(16,22,37,.96));
+    }
+    .enemy { display: flex; align-items: center; gap: 13px; }
+    .enemy-icon { width: 56px; height: 56px; border-radius: 18px; display: grid; place-items: center; font-size: 28px; background: rgba(255,77,109,.12); }
+    .enemy strong { display: block; font-size: 18px; }
+    .enemy span { color: var(--muted); font-size: 13px; }
+    .primary, .secondary, .danger-btn {
+      border: 0; border-radius: 16px; padding: 14px 16px; font-weight: 800; cursor: pointer;
+      transition: transform .12s ease, opacity .12s ease; min-height: 50px;
+    }
+    button:active { transform: scale(.98); }
+    button:disabled { opacity: .55; cursor: wait; }
+    .primary { color: white; background: linear-gradient(135deg, var(--accent), #5d42dd); box-shadow: 0 12px 28px rgba(124,92,255,.23); }
+    .danger-btn { color: white; background: linear-gradient(135deg, var(--danger), #c72e50); width: 100%; margin-top: 16px; }
+    .secondary { color: var(--text); background: var(--panel-2); border: 1px solid var(--line); }
+    .actions { margin-top: 12px; display: grid; grid-template-columns: repeat(2, 1fr); gap: 10px; }
+    .shop { margin-top: 12px; display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; }
+    .shop-item { padding: 14px 10px; border-radius: 18px; border: 1px solid var(--line); background: var(--panel); text-align: left; color: var(--text); cursor: pointer; }
+    .shop-item b { display: block; margin-top: 7px; }
+    .shop-item small { display: block; margin-top: 5px; color: var(--muted); }
+    .ranking { margin-top: 12px; border: 1px solid var(--line); border-radius: 20px; overflow: hidden; }
+    .rank { display: grid; grid-template-columns: 34px 1fr auto; gap: 10px; align-items: center; padding: 13px 14px; background: rgba(16,22,37,.8); border-bottom: 1px solid var(--line); }
+    .rank:last-child { border-bottom: 0; }
+    .rank-num { color: var(--accent-2); font-weight: 900; }
+    .rank small { color: var(--muted); display: block; margin-top: 2px; }
+    .toast {
+      position: fixed; z-index: 20; left: 50%; bottom: 88px; transform: translate(-50%, 20px);
+      width: min(calc(100% - 32px), 680px); padding: 13px 15px; border-radius: 15px;
+      background: rgba(19,26,43,.97); border: 1px solid var(--line); box-shadow: var(--shadow);
+      opacity: 0; pointer-events: none; transition: .22s ease;
+    }
+    .toast.show { opacity: 1; transform: translate(-50%, 0); }
+    .toast.error { border-color: rgba(255,77,109,.45); }
+    .battle-result { display: none; margin-top: 12px; padding: 15px; border-radius: 18px; background: rgba(0,0,0,.18); border: 1px solid var(--line); }
+    .battle-result.show { display: block; }
+    .battle-result h3 { margin: 0 0 7px; }
+    .battle-log { color: var(--muted); font-size: 13px; line-height: 1.55; margin-top: 9px; }
+    .loading { min-height: 70vh; display: grid; place-items: center; color: var(--muted); text-align: center; }
+    .spinner { width: 42px; height: 42px; border: 4px solid rgba(255,255,255,.09); border-top-color: var(--accent); border-radius: 50%; animation: spin .8s linear infinite; margin: 0 auto 14px; }
+    @keyframes spin { to { transform: rotate(360deg); } }
+    @media (max-width: 520px) {
+      .shop { grid-template-columns: 1fr; }
+      .stats-grid { display: grid; grid-template-columns: repeat(3, 1fr); }
+      .stat { padding: 10px 8px; }
+      .stat strong { font-size: 16px; }
+    }
+  </style>
+</head>
+<body>
+  <main class="app">
+    <div id="loading" class="loading"><div><div class="spinner"></div><div>Подключаемся к Синдикату…</div></div></div>
+    <div id="game" hidden>
+      <header class="topbar">
+        <div class="brand"><small>NEON DISTRICT</small><h1>СИНДИКАТ</h1></div>
+        <div class="avatar" id="avatar">?</div>
+      </header>
 
-    while True:
-        try:
-            updates = tg_api(
-                "getUpdates",
-                {
-                    "offset": UPDATE_OFFSET,
-                    "timeout": POLL_TIMEOUT,
-                    "allowed_updates": ["message"],
-                },
-            )
+      <section class="hero">
+        <div class="level-row"><span class="level-badge" id="level">УРОВЕНЬ 1</span><strong id="money">500 ₡</strong></div>
+        <div class="player-name" id="name">Игрок</div>
+        <div class="bar-label"><span>Опыт</span><span id="xpText">0 / 100</span></div>
+        <div class="bar"><span class="xp" id="xpBar" style="width:0%"></span></div>
+        <div class="bar-label"><span>Здоровье</span><span id="hpText">100 / 100</span></div>
+        <div class="bar"><span class="hp" id="hpBar" style="width:100%"></span></div>
+        <div class="bar-label"><span>Энергия</span><span id="energyText">10 / 10</span></div>
+        <div class="bar"><span class="energy" id="energyBar" style="width:100%"></span></div>
+        <div class="stats-grid">
+          <div class="stat"><span>Атака</span><strong id="attack">10</strong></div>
+          <div class="stat"><span>Защита</span><strong id="defense">2</strong></div>
+          <div class="stat"><span>Рейтинг</span><strong id="rating">1000</strong></div>
+        </div>
+      </section>
 
-            for update in updates:
-                UPDATE_OFFSET = max(
-                    UPDATE_OFFSET,
-                    int(update["update_id"]) + 1,
-                )
-                message = update.get("message")
-                if message:
-                    try:
-                        handle_message(message)
-                    except Exception:
-                        logging.exception("Ошибка обработки сообщения")
+      <section class="section">
+        <div class="section-title"><h2>Боевой сектор</h2><span>−1 энергия</span></div>
+        <div class="battle-card">
+          <div class="enemy"><div class="enemy-icon">☠️</div><div><strong>Случайный противник</strong><span>Сложность зависит от твоего уровня</span></div></div>
+          <button class="danger-btn" data-action="battle">⚔️ НАЧАТЬ БОЙ</button>
+          <div class="battle-result" id="battleResult"><h3 id="battleTitle"></h3><div id="battleText"></div><div class="battle-log" id="battleLog"></div></div>
+        </div>
+        <div class="actions">
+          <button class="primary" data-action="daily">🎁 Награда</button>
+          <button class="secondary" data-action="heal">💊 Аптечка <span id="medkits">1</span></button>
+        </div>
+      </section>
 
-        except KeyboardInterrupt:
-            raise
-        except (urllib.error.URLError, urllib.error.HTTPError) as error:
-            logging.error("Ошибка Telegram-соединения: %s", error)
-            time.sleep(5)
-        except Exception:
-            logging.error("Ошибка polling:\n%s", traceback.format_exc())
-            time.sleep(5)
+      <section class="section">
+        <div class="section-title"><h2>Чёрный рынок</h2><span>Усиления навсегда</span></div>
+        <div class="shop">
+          <button class="shop-item" data-buy="weapon">🗡️<b>Оружие +3</b><small>700 кредитов</small></button>
+          <button class="shop-item" data-buy="armor">🛡️<b>Броня +2</b><small>600 кредитов</small></button>
+          <button class="shop-item" data-buy="medkit">💊<b>Аптечка</b><small>180 кредитов</small></button>
+        </div>
+      </section>
 
+      <section class="section">
+        <div class="section-title"><h2>Рейтинг города</h2><span>Топ-10</span></div>
+        <div class="ranking" id="ranking"></div>
+      </section>
+    </div>
+  </main>
+  <div class="toast" id="toast" role="status"></div>
 
-def main() -> None:
-    global API_BASE, FILE_BASE
+  <script>
+    const launchParams = location.search.slice(1);
+    let player = null;
+    let busy = false;
 
-    setup_logging()
+    const $ = (id) => document.getElementById(id);
+    const clampPercent = (value, max) => Math.max(0, Math.min(100, max ? value / max * 100 : 0));
 
-    if sys.version_info < (3, 10):
-        raise RuntimeError("Нужен Python 3.10 или новее")
-    if not TOKEN or ":" not in TOKEN:
-        raise RuntimeError("Не задан BOT_TOKEN")
+    async function initBridge() {
+      try {
+        if (window.vkBridge) {
+          await window.vkBridge.send('VKWebAppInit');
+          await window.vkBridge.send('VKWebAppSetViewSettings', {
+            status_bar_style: 'light',
+            action_bar_color: '#090d18',
+            navigation_bar_color: '#090d18'
+          });
+        }
+      } catch (_) {}
+    }
 
-    API_BASE = f"https://api.telegram.org/bot{TOKEN}"
-    FILE_BASE = f"https://api.telegram.org/file/bot{TOKEN}"
+    async function api(path, body = {}) {
+      const response = await fetch(path, {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({launch_params: launchParams, ...body})
+      });
+      const data = await response.json().catch(() => ({detail: 'Сервер вернул некорректный ответ'}));
+      if (!response.ok) throw new Error(data.detail || 'Ошибка запроса');
+      return data;
+    }
 
-    me = tg_api("getMe")
-    logging.info("Запущен бот @%s", me.get("username", "unknown"))
+    function renderPlayer(p) {
+      player = p;
+      $('name').textContent = p.name;
+      $('avatar').textContent = p.name.trim().charAt(0).toUpperCase();
+      $('level').textContent = `УРОВЕНЬ ${p.level}`;
+      $('money').textContent = `${p.money.toLocaleString('ru-RU')} ₡`;
+      $('xpText').textContent = `${p.xp} / ${p.next_level_xp}`;
+      $('xpBar').style.width = `${clampPercent(p.xp, p.next_level_xp)}%`;
+      $('hpText').textContent = `${p.hp} / ${p.max_hp}`;
+      $('hpBar').style.width = `${clampPercent(p.hp, p.max_hp)}%`;
+      $('energyText').textContent = `${p.energy} / ${p.max_energy}`;
+      $('energyBar').style.width = `${clampPercent(p.energy, p.max_energy)}%`;
+      $('attack').textContent = p.attack;
+      $('defense').textContent = p.defense;
+      $('rating').textContent = p.rating;
+      $('medkits').textContent = p.medkits;
+    }
 
-    ok, details = compiler_diagnostics()
-    if ok:
-        logging.info("Pawn Compiler: %s", details)
-    else:
-        logging.error("Pawn Compiler не готов: %s", details)
+    function renderRanking(items) {
+      $('ranking').innerHTML = items.length ? items.map((item, index) => `
+        <div class="rank">
+          <div class="rank-num">#${index + 1}</div>
+          <div><strong>${escapeHtml(item.name)}</strong><small>Уровень ${item.level} · Побед ${item.wins}</small></div>
+          <strong>${item.rating}</strong>
+        </div>`).join('') : '<div class="rank"><div>Рейтинг пока пуст</div></div>';
+    }
 
-    poll_forever()
+    function escapeHtml(value) {
+      return String(value).replace(/[&<>'"]/g, ch => ({'&':'&amp;','<':'&lt;','>':'&gt;',"'":'&#39;','"':'&quot;'}[ch]));
+    }
+
+    function toast(message, error = false) {
+      const el = $('toast');
+      el.textContent = message;
+      el.classList.toggle('error', error);
+      el.classList.add('show');
+      clearTimeout(toast.timer);
+      toast.timer = setTimeout(() => el.classList.remove('show'), 2800);
+    }
+
+    function setBusy(value) {
+      busy = value;
+      document.querySelectorAll('button').forEach(btn => btn.disabled = value);
+    }
+
+    async function refreshRanking() {
+      const data = await api('/api/leaderboard');
+      renderRanking(data.leaderboard || []);
+    }
+
+    async function perform(path, body = {}) {
+      if (busy) return;
+      setBusy(true);
+      try {
+        const data = await api(path, body);
+        if (data.player) renderPlayer(data.player);
+        toast(data.message || 'Готово');
+        if (data.battle) {
+          $('battleResult').classList.add('show');
+          $('battleTitle').textContent = data.battle.title;
+          $('battleText').textContent = data.battle.text;
+          $('battleLog').innerHTML = (data.battle.log || []).map(escapeHtml).join('<br>');
+        }
+        await refreshRanking();
+      } catch (error) {
+        toast(error.message, true);
+      } finally {
+        setBusy(false);
+      }
+    }
+
+    document.addEventListener('click', (event) => {
+      const actionButton = event.target.closest('[data-action]');
+      if (actionButton) perform(`/api/${actionButton.dataset.action}`);
+      const buyButton = event.target.closest('[data-buy]');
+      if (buyButton) perform('/api/buy', {item: buyButton.dataset.buy});
+    });
+
+    async function start() {
+      await initBridge();
+      try {
+        const data = await api('/api/init');
+        renderPlayer(data.player);
+        renderRanking(data.leaderboard || []);
+        $('loading').hidden = true;
+        $('game').hidden = false;
+      } catch (error) {
+        $('loading').innerHTML = `<div><strong>Не удалось открыть игру</strong><p>${escapeHtml(error.message)}</p></div>`;
+      }
+    }
+
+    start();
+  </script>
+</body>
+</html>'''
 
 
 if __name__ == "__main__":
-    main()
+    uvicorn.run(app, host="0.0.0.0", port=PORT)

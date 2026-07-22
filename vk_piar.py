@@ -9,7 +9,7 @@ VK-бот автопиара для бесед — один файл.
 - ID сообщества бот пытается определить автоматически по токену.
 - Настройки хранятся отдельно для каждой беседы.
 - Проверки администратора и отдельной активации нет.
-- Любой участник беседы может использовать команды:
+- Командами может пользоваться только VK-пользователь 840292888:
     /text <текст> — задать сообщение для текущей беседы
     /on           — включить отправку каждые 2 минуты
     /off          — выключить отправку в текущей беседе
@@ -42,7 +42,10 @@ from typing import Any
 # ============================================================
 
 # Вставьте сюда токен сообщества либо задайте переменную окружения VK_TOKEN.
-VK_TOKEN = os.getenv("VK_TOKEN", "vk1.a.9bunEiB9XBiUNHNmgVA4hTjPTGtM5cYpYfxGGWLLTgITxYT78MN3E7DTv8LXOVEUvPhglrZ_ZPIYES8Mx3s)
+VK_TOKEN = os.getenv("VK_TOKEN", "vk1.a.9bunEiB9XBiUNHNmgVA4hTjPTGtM5cYpYfxGGWLLTgITxYT78MN3E7DTv8LXOVEUvPhglrZ_ZPIYES8Mx3s-hIk6PfITnNBA9LePu9ZfnXT4DeJBr27691J-wxdC1P9rRjel6P_QgRqfyb5MraIy-N2mXJIsTwQHlUutJ6LGOqbumYnxrQg5YWvluDBi3s9oVRZS_gcirCZIHpac2kYKPA")
+
+# Единственный VK ID, которому разрешено управлять ботом.
+OWNER_ID = 840292888
 
 PROMO_INTERVAL_SECONDS = 120       # 2 минуты
 WORKER_CHECK_SECONDS = 5           # частота проверки очереди
@@ -422,10 +425,7 @@ def send_help(peer_id: int, greeting: bool = False) -> None:
 
 
 def handle_command(peer_id: int, text: str) -> None:
-    """
-    Проверки администратора нет: команды может использовать любой
-    участник беседы, как запросил пользователь.
-    """
+    """Обрабатывает команды разрешённого владельца бота."""
     normalized = normalize_text(text)
     cmd = command_name(normalized)
 
@@ -605,6 +605,7 @@ def main() -> None:
     log.info("Бот запущен.")
     log.info("ID сообщества определён автоматически: %s", group_id)
     log.info("Интервал отправки: %s секунд", PROMO_INTERVAL_SECONDS)
+    log.info("Управлять ботом может только VK ID: %s", OWNER_ID)
 
     while True:
         try:
@@ -642,9 +643,10 @@ def main() -> None:
                             )
                     continue
 
-                # Игнорируем сообщения от сообществ/ботов,
-                # чтобы бот не реагировал на собственные сообщения.
-                if from_id <= 0:
+                # Управлять ботом может только один заданный VK ID.
+                # Сообщения остальных пользователей, сообществ и ботов
+                # полностью игнорируются.
+                if from_id != OWNER_ID:
                     continue
 
                 handle_command(peer_id, text)

